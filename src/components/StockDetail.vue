@@ -115,22 +115,72 @@ const flowTiers = computed(() => {
   <main class="main-content">
     <section class="detail-card" v-if="selectedStock">
       <div class="stock-header">
-        <div class="stock-tag" :class="selectedStock.change >= 0 ? 'up' : 'down'">
-          <span class="tag-arrow">{{ selectedStock.change >= 0 ? "▲" : "▼" }}</span>
-          <span class="tag-text">{{ selectedStock.change >= 0 ? "上涨" : "下跌" }}</span>
+        <div class="stock-header-left">
+          <div class="stock-tag" :class="selectedStock.change >= 0 ? 'up' : 'down'">
+            <span class="tag-arrow">{{ selectedStock.change >= 0 ? "▲" : "▼" }}</span>
+            <span class="tag-text">{{ selectedStock.change >= 0 ? "上涨" : "下跌" }}</span>
+          </div>
+          <div class="stock-identity">
+            <h2 class="stock-name">{{ selectedStock.name }}</h2>
+            <span class="stock-code">{{ selectedStock.code }}</span>
+            <span v-if="isHK" class="market-badge market-hk">港股</span>
+            <span
+              v-if="sinceAddedPct != null"
+              class="since-added"
+              :class="sinceAddedPct >= 0 ? 'up' : 'down'"
+            >
+              {{ signChar(sinceAddedPct) }}{{ sinceAddedPct.toFixed(2) }}%
+              <span class="since-added-label">自选以来</span>
+            </span>
+          </div>
         </div>
-        <div class="stock-identity">
-          <h2 class="stock-name">{{ selectedStock.name }}</h2>
-          <span class="stock-code">{{ selectedStock.code }}</span>
-          <span v-if="isHK" class="market-badge market-hk">港股</span>
-          <span
-            v-if="sinceAddedPct != null"
-            class="since-added"
-            :class="sinceAddedPct >= 0 ? 'up' : 'down'"
+
+        <div class="action-bar">
+          <button v-if="!isHK" class="btn btn-industry" @click="$emit('open-industry-modal')">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2" y="8" width="3" height="6" rx="0.5"/>
+              <rect x="6.5" y="5.5" width="3" height="8.5" rx="0.5"/>
+              <rect x="11" y="3" width="3" height="11" rx="0.5"/>
+            </svg>
+            <span>行业分析</span>
+          </button>
+          <button class="btn btn-tech" @click="$emit('open-tech-modal')">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M2 14L14 2M2 14l4-1M2 14l1-4" stroke-linejoin="round"/>
+              <circle cx="12" cy="4" r="1" fill="currentColor"/>
+            </svg>
+            <span>技术分析</span>
+          </button>
+          <button class="btn btn-sr" :class="{ active: showSR }" @click="handleToggleSR">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="4" cy="4" r="1.5" fill="#27ae60"/>
+              <circle cx="12" cy="8" r="1.5" fill="#e74c3c"/>
+              <circle cx="7" cy="12" r="1.5" fill="#7c3aed"/>
+            </svg>
+            <span>支撑/阻力</span>
+          </button>
+          <button class="btn btn-chip" @click="$emit('open-chip-modal')">
+            <svg width="18" height="18" viewBox="0 0 20 18" fill="none">
+              <path d="M1 16 6 9l3.5 3L14 3l5 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="14" cy="3" r="2.8" fill="currentColor" opacity="0.85"/>
+              <path d="M1 16h18" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+            <span>筹码峰</span>
+          </button>
+          <button class="btn btn-ai" @click="$emit('open-ai-modal')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2L14.09 8.26L20 9.27L15.5 13.97L16.82 20L12 16.77L7.18 20L8.5 13.97L4 9.27L9.91 8.26L12 2Z" fill="currentColor" stroke="currentColor" stroke-width="0.5"/>
+            </svg>
+            <span>AI 分析</span>
+          </button>
+          <button
+            class="btn btn-ghost"
+            :class="{ 'in-watchlist': selectedStock && isInWatchlist(selectedStock.code) }"
+            @click="selectedStock && $emit('toggle-watchlist', selectedStock)"
           >
-            {{ signChar(sinceAddedPct) }}{{ sinceAddedPct.toFixed(2) }}%
-            <span class="since-added-label">自选以来</span>
-          </span>
+            {{ selectedStock && isInWatchlist(selectedStock.code) ? "✓ 已自选" : "+ 加自选" }}
+          </button>
         </div>
       </div>
 
@@ -274,53 +324,6 @@ const flowTiers = computed(() => {
         </div>
       </div>
 
-      <div class="action-bar">
-        <button v-if="!isHK" class="btn btn-industry" @click="$emit('open-industry-modal')">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="2" y="8" width="3" height="6" rx="0.5"/>
-            <rect x="6.5" y="5.5" width="3" height="8.5" rx="0.5"/>
-            <rect x="11" y="3" width="3" height="11" rx="0.5"/>
-          </svg>
-          <span>行业分析</span>
-        </button>
-        <button class="btn btn-tech" @click="$emit('open-tech-modal')">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M2 14L14 2M2 14l4-1M2 14l1-4" stroke-linejoin="round"/>
-            <circle cx="12" cy="4" r="1" fill="currentColor"/>
-          </svg>
-          <span>技术分析</span>
-        </button>
-        <button class="btn btn-sr" :class="{ active: showSR }" @click="handleToggleSR">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <circle cx="4" cy="4" r="1.5" fill="#27ae60"/>
-            <circle cx="12" cy="8" r="1.5" fill="#e74c3c"/>
-            <circle cx="7" cy="12" r="1.5" fill="#7c3aed"/>
-          </svg>
-          <span>支撑/阻力</span>
-        </button>
-        <button class="btn btn-chip" @click="$emit('open-chip-modal')">
-          <svg width="18" height="18" viewBox="0 0 20 18" fill="none">
-            <path d="M1 16 6 9l3.5 3L14 3l5 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-            <circle cx="14" cy="3" r="2.8" fill="currentColor" opacity="0.85"/>
-            <path d="M1 16h18" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-          </svg>
-          <span>筹码峰</span>
-        </button>
-        <button class="btn btn-ai" @click="$emit('open-ai-modal')">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2L14.09 8.26L20 9.27L15.5 13.97L16.82 20L12 16.77L7.18 20L8.5 13.97L4 9.27L9.91 8.26L12 2Z" fill="currentColor" stroke="currentColor" stroke-width="0.5"/>
-          </svg>
-          <span>AI 分析</span>
-        </button>
-        <button
-          class="btn btn-ghost"
-          :class="{ 'in-watchlist': selectedStock && isInWatchlist(selectedStock.code) }"
-          @click="selectedStock && $emit('toggle-watchlist', selectedStock)"
-        >
-          {{ selectedStock && isInWatchlist(selectedStock.code) ? "✓ 已自选" : "+ 加自选" }}
-        </button>
-      </div>
     </section>
   </main>
 </template>
@@ -349,9 +352,19 @@ const flowTiers = computed(() => {
 
 .stock-header {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  column-gap: 16px;
+  row-gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stock-header-left {
+  display: flex;
   align-items: center;
   gap: 16px;
-  margin-bottom: 20px;
+  flex: 0 0 auto;
 }
 
 .stock-tag {
@@ -389,6 +402,7 @@ const flowTiers = computed(() => {
   font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.015em;
+  white-space: nowrap;
 }
 
 .stock-code {
@@ -637,22 +651,27 @@ const flowTiers = computed(() => {
 .tier-value.outflow,
 .tier-pct.outflow { color: var(--green); }
 
-/* ===== Steep: 操作按钮 ===== */
+/* ===== Steep: 操作按钮（详情右上角，右对齐且不挤压左侧名称） ===== */
 .action-bar {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  margin-left: auto;
+  flex: 1 1 280px;
+  min-width: 0;
 }
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 10px 24px;
+  gap: 5px;
+  padding: 7px 14px;
   border: none;
   border-radius: var(--radius-full);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
@@ -662,8 +681,8 @@ const flowTiers = computed(() => {
 }
 
 .btn svg {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
 }
 
@@ -753,31 +772,14 @@ const flowTiers = computed(() => {
   box-shadow: var(--shadow-elevated);
 }
 
-/* 窄窗：底部操作按钮同步缩小 */
-@media (max-width: 1200px) {
-  .action-bar {
-    gap: 8px;
-  }
-
-  .btn {
-    padding: 8px 16px;
-    font-size: 12px;
-    gap: 5px;
-  }
-
-  .btn svg {
-    width: 14px;
-    height: 14px;
-  }
-}
-
-@media (max-width: 900px) {
+/* 窄窗：按钮缩小，仍保持右对齐 */
+@media (max-width: 1400px) {
   .action-bar {
     gap: 6px;
   }
 
   .btn {
-    padding: 6px 12px;
+    padding: 6px 11px;
     font-size: 11px;
     gap: 4px;
   }
@@ -785,6 +787,13 @@ const flowTiers = computed(() => {
   .btn svg {
     width: 12px;
     height: 12px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .btn {
+    padding: 6px 10px;
+    font-size: 11px;
   }
 }
 
