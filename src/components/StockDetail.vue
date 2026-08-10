@@ -645,6 +645,10 @@ const flowTiers = computed(() => {
 }
 
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   padding: 10px 24px;
   border: none;
   border-radius: var(--radius-full);
@@ -654,13 +658,17 @@ const flowTiers = computed(() => {
   cursor: pointer;
   transition: all 0.15s;
   letter-spacing: -0.009em;
+  white-space: nowrap;
+}
+
+.btn svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
 /* Steep: Primary CTA — Rust fill, full round */
 .btn-industry {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   background: var(--rust);
   color: #fff;
   box-shadow: var(--shadow-card);
@@ -672,9 +680,6 @@ const flowTiers = computed(() => {
 
 /* Steep: Secondary filled CTA — Ink fill */
 .btn-tech {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   background: var(--ink);
   color: #fff;
   box-shadow: var(--shadow-card);
@@ -710,9 +715,6 @@ const flowTiers = computed(() => {
   color: var(--text-secondary);
   border: 1px solid var(--border);
   transition: all 0.15s;
-  display: flex;
-  align-items: center;
-  gap: 4px;
 }
 .btn-sr:hover {
   border-color: var(--ink);
@@ -726,9 +728,6 @@ const flowTiers = computed(() => {
 
 /* Steep: 筹码峰按钮 — 山峰图标 + Purple 色调 */
 .btn-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   background: rgba(124, 58, 237, 0.08);
   color: #7c3aed;
   border: 1px solid rgba(124, 58, 237, 0.35);
@@ -743,9 +742,6 @@ const flowTiers = computed(() => {
 
 /* Steep: AI 分析按钮 — 星形图标 + Rust 色 */
 .btn-ai {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   background: var(--apricot-wash);
   color: var(--rust);
   border: 1px solid var(--rust);
@@ -755,6 +751,41 @@ const flowTiers = computed(() => {
   background: var(--rust);
   color: #fff;
   box-shadow: var(--shadow-elevated);
+}
+
+/* 窄窗：底部操作按钮同步缩小 */
+@media (max-width: 1200px) {
+  .action-bar {
+    gap: 8px;
+  }
+
+  .btn {
+    padding: 8px 16px;
+    font-size: 12px;
+    gap: 5px;
+  }
+
+  .btn svg {
+    width: 14px;
+    height: 14px;
+  }
+}
+
+@media (max-width: 900px) {
+  .action-bar {
+    gap: 6px;
+  }
+
+  .btn {
+    padding: 6px 12px;
+    font-size: 11px;
+    gap: 4px;
+  }
+
+  .btn svg {
+    width: 12px;
+    height: 12px;
+  }
 }
 
 /* ===== 图表切换标签 ===== */

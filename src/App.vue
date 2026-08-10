@@ -546,4 +546,18 @@ onUnmounted(() => {
   padding: 24px 32px;
   gap: 24px;
 }
+
+@media (max-width: 1200px) {
+  .main-layout {
+    padding: 16px 20px;
+    gap: 16px;
+  }
+}
+
+@media (max-width: 900px) {
+  .main-layout {
+    padding: 12px 14px;
+    gap: 12px;
+  }
+}
 </style>

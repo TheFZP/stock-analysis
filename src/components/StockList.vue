@@ -166,10 +166,12 @@ defineExpose({ focusSearch: () => searchDropdownRef.value?.focus() });
 </template>
 
 <style scoped>
-/* ===== Steep: 侧边栏 ===== */
+/* ===== Steep: 侧边栏（随窗口宽度按比例收缩） ===== */
 .sidebar {
-  width: 370px;
-  min-width: 370px;
+  width: clamp(220px, 26vw, 370px);
+  min-width: 220px;
+  max-width: 370px;
+  flex: 0 1 370px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -290,12 +292,17 @@ defineExpose({ focusSearch: () => searchDropdownRef.value?.focus() });
 .item-name {
   font-size: 14px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .item-code {
   font-size: 11px;
   color: var(--text-muted);
   font-weight: 500;
+  flex-shrink: 0;
 }
 
 .market-badge-sm {
@@ -418,6 +425,48 @@ defineExpose({ focusSearch: () => searchDropdownRef.value?.focus() });
 .sidebar-tab:hover:not(.active) {
   color: var(--text-secondary);
   background: #f8f9fc;
+}
+
+/* 窄窗：侧边栏内容更紧凑 */
+@media (max-width: 1200px) {
+  .sidebar {
+    gap: 12px;
+  }
+
+  .list-header {
+    padding: 14px 16px 10px;
+  }
+
+  .stock-item {
+    padding: 10px 14px;
+  }
+
+  .item-price {
+    min-width: 60px;
+    font-size: 13px;
+  }
+
+  .item-change {
+    min-width: 48px;
+    padding: 2px 6px;
+    font-size: 11px;
+  }
+
+  .sidebar-tab {
+    padding: 8px 0;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 900px) {
+  .item-price {
+    min-width: 52px;
+  }
+
+  .item-change {
+    min-width: 44px;
+    padding: 2px 4px;
+  }
 }
 
 </style>
