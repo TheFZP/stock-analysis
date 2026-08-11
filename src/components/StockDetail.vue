@@ -126,23 +126,39 @@ const flowTiers = computed(() => {
   <main class="main-content">
     <section class="detail-card" v-if="selectedStock">
       <div class="stock-header">
-        <div class="stock-header-left">
-          <div class="stock-tag" :class="selectedStock.change >= 0 ? 'up' : 'down'">
-            <span class="tag-arrow">{{ selectedStock.change >= 0 ? "▲" : "▼" }}</span>
-            <span class="tag-text">{{ selectedStock.change >= 0 ? "上涨" : "下跌" }}</span>
+        <div class="stock-header-main">
+          <div class="stock-title-row">
+            <div class="stock-tag" :class="selectedStock.change >= 0 ? 'up' : 'down'">
+              <span class="tag-arrow">{{ selectedStock.change >= 0 ? "▲" : "▼" }}</span>
+              <span class="tag-text">{{ selectedStock.change >= 0 ? "上涨" : "下跌" }}</span>
+            </div>
+            <div class="stock-identity">
+              <h2 class="stock-name">{{ selectedStock.name }}</h2>
+              <span class="stock-code">{{ selectedStock.code }}</span>
+              <span v-if="isHK" class="market-badge market-hk">港股</span>
+              <span
+                v-if="sinceAddedPct != null"
+                class="since-added"
+                :class="sinceAddedPct >= 0 ? 'up' : 'down'"
+              >
+                {{ signChar(sinceAddedPct) }}{{ sinceAddedPct.toFixed(2) }}%
+                <span class="since-added-label">自选以来</span>
+              </span>
+            </div>
           </div>
-          <div class="stock-identity">
-            <h2 class="stock-name">{{ selectedStock.name }}</h2>
-            <span class="stock-code">{{ selectedStock.code }}</span>
-            <span v-if="isHK" class="market-badge market-hk">港股</span>
-            <span
-              v-if="sinceAddedPct != null"
-              class="since-added"
-              :class="sinceAddedPct >= 0 ? 'up' : 'down'"
-            >
-              {{ signChar(sinceAddedPct) }}{{ sinceAddedPct.toFixed(2) }}%
-              <span class="since-added-label">自选以来</span>
-            </span>
+
+          <div class="price-area">
+            <div class="price-main">
+              <span class="price" :class="selectedStock.change >= 0 ? 'up' : 'down'">
+                {{ currencySymbol }}{{ selectedStock.price.toFixed(2) }}
+              </span>
+              <span class="price-change" :class="selectedStock.change >= 0 ? 'up' : 'down'">
+                {{ signChar(selectedStock.change) }}{{ selectedStock.change.toFixed(2) }}
+              </span>
+              <span class="price-pct" :class="selectedStock.change >= 0 ? 'up' : 'down'">
+                {{ signChar(selectedStock.changePct) }}{{ selectedStock.changePct.toFixed(2) }}%
+              </span>
+            </div>
           </div>
         </div>
 
@@ -199,20 +215,6 @@ const flowTiers = computed(() => {
           >
             {{ selectedStock && isInWatchlist(selectedStock.code) ? "✓ 已自选" : "+ 加自选" }}
           </button>
-        </div>
-      </div>
-
-      <div class="price-area">
-        <div class="price-main">
-          <span class="price" :class="selectedStock.change >= 0 ? 'up' : 'down'">
-            {{ currencySymbol }}{{ selectedStock.price.toFixed(2) }}
-          </span>
-          <span class="price-change" :class="selectedStock.change >= 0 ? 'up' : 'down'">
-            {{ signChar(selectedStock.change) }}{{ selectedStock.change.toFixed(2) }}
-          </span>
-          <span class="price-pct" :class="selectedStock.change >= 0 ? 'up' : 'down'">
-            {{ signChar(selectedStock.changePct) }}{{ selectedStock.changePct.toFixed(2) }}%
-          </span>
         </div>
       </div>
 
@@ -371,28 +373,38 @@ const flowTiers = computed(() => {
 .stock-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   column-gap: 16px;
-  row-gap: 12px;
-  margin-bottom: 20px;
+  row-gap: 10px;
+  margin-bottom: 12px;
 }
 
-.stock-header-left {
+/* 左侧：名称 + 价格绑在一起，窄屏换行时按钮也不会插进中间 */
+.stock-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.stock-title-row {
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex: 0 0 auto;
+  gap: 10px;
+  min-height: 30px;
 }
 
 .stock-tag {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 12px;
+  padding: 3px 8px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 /* 中国 A 股标准：红涨绿跌 */
@@ -407,24 +419,27 @@ const flowTiers = computed(() => {
 }
 
 .tag-arrow {
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .stock-identity {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .stock-name {
-  font-size: 22px;
+  font-size: 17px;
   font-weight: 700;
   letter-spacing: -0.015em;
   white-space: nowrap;
+  line-height: 1.2;
+  margin: 0;
 }
 
 .stock-code {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-secondary);
   font-weight: 500;
 }
@@ -467,19 +482,19 @@ const flowTiers = computed(() => {
 
 /* ===== 价格区域 ===== */
 .price-area {
-  margin-bottom: 24px;
+  margin-bottom: 0;
 }
 
 .price-main {
   display: flex;
   align-items: baseline;
-  gap: 14px;
+  gap: 10px;
 }
 
 .price {
-  font-size: 40px;
+  font-size: 26px;
   font-weight: 800;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.4px;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
@@ -488,7 +503,7 @@ const flowTiers = computed(() => {
 .price.down { color: var(--green); }
 
 .price-change {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 700;
 }
 
@@ -496,10 +511,10 @@ const flowTiers = computed(() => {
 .price-change.down { color: var(--green); }
 
 .price-pct {
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 2px 12px;
-  border-radius: 6px;
+  padding: 1px 8px;
+  border-radius: 5px;
 }
 
 .price-pct.up {
@@ -680,10 +695,11 @@ const flowTiers = computed(() => {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-content: flex-start;
   align-items: center;
   margin-left: auto;
-  flex: 1 1 280px;
-  min-width: 0;
+  flex: 1 1 320px;
+  min-width: min(100%, 280px);
 }
 
 .btn {

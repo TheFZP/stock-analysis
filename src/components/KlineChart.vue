@@ -21,6 +21,7 @@ const periodNames = { day: "日 K", week: "周 K", month: "月 K" };
 const periodLabel = computed(() => `${periodNames[props.period] || "日 K"} 线`);
 
 const chartContainer = ref(null);
+const rangeTrackRef = ref(null);
 let chart = null;
 let candleSeries = null;
 let volumeSeries = null;
@@ -30,6 +31,184 @@ let signalMarkersPlugin = null;
 /** 30日高低价线引用 */
 let highPriceLine = null;
 let lowPriceLine = null;
+/** 避免 range slider ↔ chart 互相触发 */
+let rangeSyncing = false;
+let lastDataKey = "";
+
+/** 日期范围选择器：逻辑索引（与 timeScale 一致） */
+const rangeFrom = ref(0);
+const rangeTo = ref(0);
+const dataLen = ref(0);
+const rangeDragging = ref(null); // 'left' | 'right' | 'window' | null
+
+const rangeStartLabel = computed(() => {
+  const list = props.data || [];
+  if (!list.length) return "--";
+  const idx = Math.max(0, Math.min(list.length - 1, Math.round(rangeFrom.value)));
+  return formatRangeDate(list[idx]?.date);
+});
+
+const rangeEndLabel = computed(() => {
+  const list = props.data || [];
+  if (!list.length) return "--";
+  const idx = Math.max(0, Math.min(list.length - 1, Math.round(rangeTo.value)));
+  return formatRangeDate(list[idx]?.date);
+});
+
+const rangeWindowStyle = computed(() => {
+  const n = Math.max(dataLen.value - 1, 1);
+  const left = (rangeFrom.value / n) * 100;
+  const right = (rangeTo.value / n) * 100;
+  return {
+    left: `${Math.max(0, Math.min(100, left))}%`,
+    width: `${Math.max(0.5, Math.min(100, right - left))}%`,
+  };
+});
+
+/** 迷你走势折线（收盘价） */
+const sparklinePoints = computed(() => {
+  const list = props.data || [];
+  if (list.length < 2) return "";
+  const closes = list.map((d) => d.close);
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const span = max - min || 1;
+  const w = 100;
+  const h = 100;
+  return closes
+    .map((c, i) => {
+      const x = (i / (closes.length - 1)) * w;
+      const y = h - ((c - min) / span) * h * 0.85 - h * 0.075;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+});
+
+function formatRangeDate(date) {
+  if (!date) return "--";
+  if (typeof date === "string") return date.slice(0, 10);
+  if (typeof date === "object" && date.year) {
+    return `${date.year}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`;
+  }
+  return String(date);
+}
+
+function clampRange(from, to) {
+  const n = Math.max(dataLen.value - 1, 0);
+  const minBars = Math.min(5, Math.max(n, 1));
+  let f = Math.max(0, Math.min(n, from));
+  let t = Math.max(0, Math.min(n, to));
+  if (t - f < minBars) {
+    if (rangeDragging.value === "left") f = Math.max(0, t - minBars);
+    else if (rangeDragging.value === "right") t = Math.min(n, f + minBars);
+    else {
+      const mid = (f + t) / 2;
+      f = Math.max(0, mid - minBars / 2);
+      t = Math.min(n, f + minBars);
+      f = Math.max(0, t - minBars);
+    }
+  }
+  return { from: f, to: t };
+}
+
+function applyRangeToChart(from, to) {
+  if (!chart || dataLen.value < 2) return;
+  const { from: f, to: t } = clampRange(from, to);
+  rangeFrom.value = f;
+  rangeTo.value = t;
+  rangeSyncing = true;
+  try {
+    chart.timeScale().setVisibleLogicalRange({ from: f - 0.5, to: t + 0.5 });
+  } catch (_) {
+    /* ignore */
+  }
+  rangeSyncing = false;
+}
+
+function syncRangeFromChart(logicalRange) {
+  if (rangeSyncing || !logicalRange || dataLen.value < 2) return;
+  const n = dataLen.value - 1;
+  const f = Math.max(0, Math.min(n, logicalRange.from + 0.5));
+  const t = Math.max(0, Math.min(n, logicalRange.to - 0.5));
+  if (t > f) {
+    rangeFrom.value = f;
+    rangeTo.value = t;
+  }
+}
+
+function indexFromPointer(clientX) {
+  const el = rangeTrackRef.value;
+  if (!el || dataLen.value < 2) return 0;
+  const rect = el.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return ratio * (dataLen.value - 1);
+}
+
+function onRangePointerDown(e, mode) {
+  if (dataLen.value < 2) return;
+  e.preventDefault();
+  rangeDragging.value = mode;
+  const target = e.currentTarget;
+  target.setPointerCapture?.(e.pointerId);
+
+  const startX = e.clientX;
+  const startFrom = rangeFrom.value;
+  const startTo = rangeTo.value;
+  const n = dataLen.value - 1;
+
+  const onMove = (ev) => {
+    if (mode === "left") {
+      applyRangeToChart(indexFromPointer(ev.clientX), startTo);
+    } else if (mode === "right") {
+      applyRangeToChart(startFrom, indexFromPointer(ev.clientX));
+    } else if (mode === "window") {
+      const el = rangeTrackRef.value;
+      if (!el) return;
+      const dx = ((ev.clientX - startX) / el.getBoundingClientRect().width) * n;
+      const width = startTo - startFrom;
+      let f = startFrom + dx;
+      let t = startTo + dx;
+      if (f < 0) {
+        f = 0;
+        t = width;
+      }
+      if (t > n) {
+        t = n;
+        f = n - width;
+      }
+      applyRangeToChart(f, t);
+    }
+  };
+
+  const onUp = (ev) => {
+    rangeDragging.value = null;
+    target.releasePointerCapture?.(ev.pointerId);
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
+function onRangeTrackPointerDown(e) {
+  if (e.target !== rangeTrackRef.value && !e.target.classList?.contains("range-sparkline")) return;
+  const idx = indexFromPointer(e.clientX);
+  const width = rangeTo.value - rangeFrom.value;
+  let f = idx - width / 2;
+  let t = idx + width / 2;
+  const n = dataLen.value - 1;
+  if (f < 0) {
+    f = 0;
+    t = width;
+  }
+  if (t > n) {
+    t = n;
+    f = n - width;
+  }
+  applyRangeToChart(f, t);
+  onRangePointerDown(e, "window");
+}
 
 /** 支撑/阻力线 */
 let srPriceLines = [];
@@ -223,6 +402,11 @@ function initChart() {
   // 创建 T+0 信号标记插件
   signalMarkersPlugin = createSeriesMarkers(candleSeries);
 
+  // 与底部日期范围选择器同步
+  chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    syncRangeFromChart(range);
+  });
+
   // 响应式 resize
   const observer = new ResizeObserver(() => {
     if (chartContainer.value && chart) {
@@ -371,7 +555,19 @@ function updateChartData(newData) {
     }
   }
 
-  chart.timeScale().fitContent();
+  dataLen.value = candleData.length;
+  const dataKey = `${candleData[0]?.time}_${candleData[candleData.length - 1]?.time}_${candleData.length}`;
+  const isNewDataset = dataKey !== lastDataKey;
+  lastDataKey = dataKey;
+
+  if (isNewDataset) {
+    chart.timeScale().fitContent();
+    rangeFrom.value = 0;
+    rangeTo.value = Math.max(candleData.length - 1, 0);
+  } else {
+    // 刷新行情时保持当前可视区间，避免重置缩放
+    applyRangeToChart(rangeFrom.value, rangeTo.value);
+  }
 }
 
 function ensureChart() {
@@ -519,6 +715,42 @@ onUnmounted(() => {
         <p class="kline-empty-text">暂无 K 线数据</p>
       </div>
     </div>
+
+    <!-- 日期范围选择器 -->
+    <div v-if="data && data.length > 1" class="kline-range">
+      <span class="range-date">{{ rangeStartLabel }}</span>
+      <div
+        ref="rangeTrackRef"
+        class="range-track"
+        @pointerdown="onRangeTrackPointerDown"
+      >
+        <svg class="range-sparkline" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <polyline
+            v-if="sparklinePoints"
+            :points="sparklinePoints"
+            fill="none"
+            stroke="rgba(163, 166, 175, 0.55)"
+            stroke-width="1.5"
+            vector-effect="non-scaling-stroke"
+          />
+        </svg>
+        <div
+          class="range-window"
+          :style="rangeWindowStyle"
+          @pointerdown.stop="onRangePointerDown($event, 'window')"
+        >
+          <div
+            class="range-handle range-handle-left"
+            @pointerdown.stop="onRangePointerDown($event, 'left')"
+          />
+          <div
+            class="range-handle range-handle-right"
+            @pointerdown.stop="onRangePointerDown($event, 'right')"
+          />
+        </div>
+      </div>
+      <span class="range-date">{{ rangeEndLabel }}</span>
+    </div>
   </div>
 </template>
 
@@ -624,6 +856,93 @@ onUnmounted(() => {
 .kline-chart {
   width: 100%;
   height: 100%;
+}
+
+/* ===== 日期范围选择器 ===== */
+.kline-range {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-top: 8px;
+  user-select: none;
+  touch-action: none;
+}
+
+.range-date {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 72px;
+}
+
+.range-date:last-child {
+  text-align: right;
+}
+
+.range-track {
+  position: relative;
+  flex: 1;
+  height: 28px;
+  border-radius: 4px;
+  background: var(--fog, #f3f4f6);
+  border: 1px solid var(--border-light);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.range-sparkline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.range-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(26, 115, 232, 0.12);
+  border: 1px solid rgba(26, 115, 232, 0.55);
+  border-radius: 3px;
+  cursor: grab;
+  box-sizing: border-box;
+}
+
+.range-window:active {
+  cursor: grabbing;
+}
+
+.range-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.range-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: #1a73e8;
+}
+
+.range-handle-left {
+  left: -1px;
+}
+
+.range-handle-right {
+  right: -1px;
 }
 
 .kline-loading {
