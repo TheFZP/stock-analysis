@@ -18,11 +18,11 @@ stock-analysis/
 │   │   ├── 弹窗:      AiAnalysisModal.vue / GlobalAiModal.vue / TechAnalysisModal.vue
 │   │   │             IndustryModal.vue / ProfileModal.vue / PositionModal.vue
 │   │   │             SettingsModal.vue / ChipDistribution.vue / ConfirmDialog.vue
-│   │   ├── 通用:      IndicatorCard.vue / SectorMoneyFlow.vue
+│   │   ├── 通用:      IndicatorCard.vue
 │   │   ├── 迷你窗口:  MiniMode.vue
 │   │   ├── settings/  (5 个设置标签页: 通知/刷新/图表/AI/关于)
 │   │   └── ai/        (ApiKeySetup / ChatMessages / ChatFooter / ModelControls)
-│   ├── composables/  (19 个 — 数据加载/纯计算/持久化)
+│   ├── composables/  (18 个 — 数据加载/纯计算/持久化)
 │   ├── skills/       (AI Agent 工具系统 — 6 个 skill)
 │   ├── prompts/      (system-prompt.md)
 │   └── utils/        (format.js / limit.js 涨跌停幅度按板块判断)
@@ -63,7 +63,7 @@ App.vue ──调用──> composables/useXxx.js
 
 | 文件 | 用途 | 后端命令 |
 |------|------|---------|
-| `useWatchlist.js` | 自选股 CRUD | 纯前端 (localStorage) |
+| `useWatchlist.js` | 自选股 CRUD（加入时记录 `addedPrice`，搜索/问财添加由首次行情回填，用于"自选以来"涨跌幅） | 纯前端 (localStorage) |
 | `useQuoteLoader.js` | 批量加载实时行情 | `get_stock_quote` / `get_stock_quotes_batch` |
 | `useStockSearch.js` | 股票搜索（防抖） | `search_stocks` |
 | `useKlineData.js` | K 线 + 周期切换 | `get_stock_kline` |
@@ -71,8 +71,7 @@ App.vue ──调用──> composables/useXxx.js
 | `useMoneyFlow.js` | 资金流向（竞态保护） | `get_stock_money_flow` |
 | `useIndustryData.js` | 行业分析 | `get_stock_industry` |
 | `useMarketIndices.js` | 六大指数行情 | `get_market_indices` |
-| `useSectorMoneyFlow.js` | 板块资金流向 | `get_sector_money_flow` |
-| `useAiAnalysis.js` | AI 对话（个股/全局） | `call_llm` + `call_llm_stream` |
+| `useAiAnalysis.js` | AI 对话（个股/全局，Agent 循环 ≤8 轮；全局支持 @代码 快捷引用个股、指数/持仓预加载） | `call_llm` + `call_llm_stream` |
 | `usePositions.js` | 持仓管理 + 盈亏计算（含港币→人民币汇率换算，失败回退上次缓存值） | `get_fx_rate` (汇率) |
 | `useUserProfile.js` | 用户画像读写 | `read_user_profile` / `save_user_profile` |
 | `useSettings.js` | 全局设置单例 | 纯前端 (localStorage) |
@@ -83,6 +82,7 @@ App.vue ──调用──> composables/useXxx.js
 | `useTechIndicators.js` | MACD/KDJ/RSI/WR/EMA 等 | 纯前端计算 |
 | `useChipDistribution.js` | 筹码分布（三角形分布法） | 纯前端计算 |
 | `useSupportResistance.js` | 支撑/阻力位（聚类 + 斐波那契） | 纯前端计算 |
+| `useIwencaiRobot.js` | 问财自然语言选股（chameleon.js 在 WebView 生成 Cookie v） | `get_iwencai_robot` |
 | `fetcher.js` | `createDataFetcher()` 工厂函数 | 不直接调用命令 |
 
 ### 3.2 Skills（AI 工具系统）
@@ -96,9 +96,9 @@ App.vue ──调用──> composables/useXxx.js
 | `MoneyFlow.js` | `get_stock_money_flow` — 全档资金流向（主力/超大单/大单/中单/小单） |
 | `Industry.js` | `get_stock_industry` — 行业分析 |
 | `MarketIndices.js` | `get_market_indices` — 大盘指数 |
-| `WebSearch.js` | `web_search` / `web_fetch` — 联网搜索（东方财富新闻库，按时间倒序返回最新财经新闻）；systemPrompt 教 AI 生成搜索词（用户说"帮我搜 XXX"时直接拆 2-3 组词搜索）+ 权威来源优先（证券时报/巨潮/交易所等官方媒体） |
+| `WebSearch.js` | `web_search` / `web_fetch` — 联网搜索（东方财富新闻库，相关性排序返回财经新闻）；systemPrompt 统一为四步先搜索流程（拆词→搜索→叠加本地工具数据→综合回答）+ 关键词铁律（禁用「最新消息/怎么样」等泛词）+ 权威来源优先（证券时报/巨潮/交易所等官方媒体） |
 | `Intraday.js` | `get_stock_intraday` — 当日分时走势 |
-| `MarketOverview.js` | `get_hot_list` — 实时热榜 / `get_sector_money_flow` — 板块资金流向 |
+| `MarketOverview.js` | `get_hot_list` — 实时热榜 |
 | `StockSearch.js` | `search_stocks` — 股票名称/代码搜索 |
 | `UserContext.js` | `read_user_profile` / `save_user_profile` — 用户画像 / `get_fx_rate` — 港元汇率 |
 
@@ -110,10 +110,13 @@ App.vue ──调用──> composables/useXxx.js
 - **用户画像**: `useUserProfile` + `ProfileModal`，Markdown 文件存 `app_data_dir`，AI 每次回复后自动更新（`deepseek-v4-flash` 静默失败），支持手动编辑
 - **自选通知**: `useWatchlistNotifications`，涨停/跌停/±7%/±5%/快速拉升下跌(30s≥2%)，每股票每类型每日一次；涨跌停阈值按板块判断（主板 ±10%/创业板科创板 ±20%/北交所 ±30%/港股无涨跌停，ST 与所属板块一致）
 - **全局设置**: `useSettings` + `SettingsModal`，5 标签页（通知/刷新/图表/AI/关于），实时生效
+- **AI 双入口**: 个股 AI（AiAnalysisModal，注入行情/K线/资金/行业/筹码/持仓上下文，自动学习画像）；顶部全局 AI（GlobalAiModal，注入大盘指数+持仓，`@代码` 快捷引用个股行情并复用个股上下文，同样学习画像；历史消息按 6000 字符预算裁剪防 token 超限）
+- **AI 联网搜索策略**: 联网开关（设置 AI 页 + 弹窗顶部「联网」toggle）对**所有 AI 入口统一生效**（个股 AI、全局 AI、@代码 快捷引用）。开启时 AI **先搜索再回答**：拆关键词 → `web_search` → 叠加本地工具数据（行情/K线/资金/指数）→ 综合回答；关闭时搜索 skill 的提示词与工具一并剔除（`system-prompt.md` 的 `{{SEARCH_POLICY}}` 占位符 + `getMergedSystemPrompt({ excludeSkills })` 动态注入）
 - **全局快捷键**: `Ctrl+K` 聚焦搜索框、`Ctrl+N` 打开全局 AI（`tauri-plugin-global-shortcut`，注册失败静默降级；迷你窗口不注册）
 - **单例应用**: `tauri-plugin-single-instance` — 重复启动时聚焦已有主窗口（主窗口不存在则聚焦迷你窗口），新实例直接退出，防止多开
 - **系统托盘**: `tray-icon` 特性 — 点击主窗口关闭按钮 → 隐藏到右下角托盘（不退出，首次隐藏发通知提示）；右键托盘图标菜单「显示主窗口 / 退出」；左键单击/菜单项恢复主窗口；迷你窗口关闭仍为正常关闭
 - **迷你置顶模式**: TitleBar 按钮 → 新开无边框置顶小窗（`?mini=1`），自选股实时行情 10s 刷新，双击行 `mini-select-stock` 事件联动主窗口选中并聚焦；App.vue 与 MiniMode 各自独立定时器
+- **问财选股窗口**: 顶部「选股」按钮 → 新开独立窗口（`?iwencai=1`，960×720 可调），自然语言选股；结果行点击 → `iwencai-select-stock` 事件联动主窗口选中并聚焦后自动关闭
 
 ---
 
@@ -128,7 +131,6 @@ App.vue ──调用──> composables/useXxx.js
 | `get_stock_kline` | Tencent | K 线（日/周/月） |
 | `get_stock_intraday` | Tencent AppStock | 分时数据（当日分钟） |
 | `get_stock_money_flow` | Tencent → East Money 备选 | 资金流向（5 档净流入+占比） |
-| `get_sector_money_flow` | East Money push2 | 板块资金排行 |
 | `get_stock_industry` | East Money HSF10 | 行业分析 |
 | `get_market_indices` | Tencent（并行） | 七大指数（失败兜底条目用真实名称，非裸代码） |
 | `search_stocks` | Tencent | 股票搜索 |
@@ -137,9 +139,10 @@ App.vue ──调用──> composables/useXxx.js
 | `call_llm_stream` | DeepSeek SSE | AI 流式 → `llm-chunk`/`llm-done`/`llm-error` |
 | `read_user_profile` | 本地文件 | 读取画像 md |
 | `save_user_profile` | 本地文件 | 保存画像 md |
-| `web_search` | 东方财富搜索 API | 财经新闻搜索（按时间倒序返回最新新闻，带发布时间/来源媒体；本地 site: 域名过滤兼容） |
+| `web_search` | 东方财富搜索 API | 财经新闻搜索（**相关性排序** sort=default + 本地泛词剥离/去重，带发布时间/来源媒体；本地 site: 域名过滤兼容） |
 | `web_fetch` | 目标 URL | 网页抓取（JSON-LD→转义HTML→正文容器→meta 四级提取，限 50000 字符） |
 | `get_fx_rate` | Frankfurter API | 港元兑人民币汇率（CNY/HKD） |
+| `get_iwencai_robot` | 问财 get-robot-data | 自然语言选股（需 Cookie v，由前端 WebView 执行 `public/chameleon.js` 生成；响应为 UTF-8 JSON，datas 为对象数组） |
 | `get_app_version` | 本地 | 当前应用版本（CARGO_PKG_VERSION） |
 | `check_for_update` | GitHub API | 检查最新 Release（限流 60 次/时/IP；`v` 前缀剥离后语义化比较） |
 
@@ -151,7 +154,8 @@ App.vue ──调用──> composables/useXxx.js
 | `eastmoney.rs` | UTF-8 | JSON/JSONP/HTML，有 CDN/WAF |
 | `hotlist.rs` | UTF-8 | JSON API |
 | `llm.rs` | UTF-8 | OpenAI 兼容；V4 工具调用需回传 `reasoning_content`（否则 400）；`thinking_enabled` 控制思考模式 |
-| `web.rs` | UTF-8（charset 自动解码 GBK） | 东财搜索 API（search-api-web.eastmoney.com JSONP，sort=time 最新优先）；正文提取: JSON-LD articleBody → JSON 转义 HTML（腾讯）→ 正文容器/class → meta description；反爬站过滤（zhihu/baike/douban 等 8 个）；`site:域名` 本地过滤兼容 |
+| `web.rs` | UTF-8（charset 自动解码 GBK） | 东财搜索 API（search-api-web.eastmoney.com JSONP，**sort=default 相关性排序**——实测 sort=time 会返回含任意关键词的无关新闻；本地剥离泛词+URL/标题去重）；正文提取: JSON-LD articleBody → JSON 转义 HTML（腾讯）→ 正文容器/class（含东财 `txtinfos`/`ContentBody`/`contentbox`）→ meta description；反爬站过滤（zhihu/baike/douban 等 8 个）；`site:域名` 本地过滤兼容 |
+| `iwencai.rs` | UTF-8 | 问财选股（`data.answer[0].txt[0].content.components[0].data`；columns 为 `label/key/index_name`，datas 为对象数组；meta.extra 含 row_count/token/condition；必须带 Cookie v + 浏览器 UA/Referer/Origin） |
 
 ### 4.3 代码转换 (helpers.rs)
 
