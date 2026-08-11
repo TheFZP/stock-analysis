@@ -15,6 +15,8 @@
     "core:window:allow-set-always-on-top",
     "core:webview:allow-create-webview-window",
     "notification:default",
-    "global-shortcut:default"
+    "global-shortcut:default",
+    "core:tray:allow-get-by-id",
+    "core:tray:allow-set-tooltip"
   ]
 }

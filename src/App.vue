@@ -31,6 +31,7 @@ import { deleteStockMessages } from "./composables/aiMessageStore";
 import { useUserProfileSingleton } from "./composables/useUserProfile";
 import { useWatchlistNotifications } from "./composables/useWatchlistNotifications";
 import { useSettings } from "./composables/useSettings";
+import { useTrayPositionsTooltip } from "./composables/useTrayPositionsTooltip";
 
 // ---- 侧边栏视图切换 ----
 const sidebarView = ref("watchlist");
@@ -177,8 +178,22 @@ function closeChipModal() { showChipModal.value = false; }
 // ---- 持仓弹窗 ----
 const showPositionsModal = ref(false);
 const positionPrefill = ref(null);
-const { positions, addPosition, removePosition, updatePositionQuote, setFxRate } = usePositions();
+const {
+  positions,
+  positionStats,
+  totalProfit,
+  totalProfitPct,
+  addPosition,
+  removePosition,
+  updatePositionQuote,
+  setFxRate,
+} = usePositions();
 const { loadProfile } = useUserProfileSingleton();
+
+// 主窗口：悬浮托盘图标时展示持仓盈亏摘要
+if (!isMiniMode && !isIwencaiMode) {
+  useTrayPositionsTooltip({ positionStats, totalProfit, totalProfitPct });
+}
 
 async function handleAddPosition(pos) {
   addPosition(pos);
