@@ -14,7 +14,7 @@ pub mod types;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -55,7 +55,6 @@ pub fn run() {
 
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().expect("bundle icon missing").clone())
-                .tooltip("stock-analysis")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -64,13 +63,30 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
+                    let app = tray.app_handle();
+                    match &event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } => {
+                            let _ = app.emit("tray-hover", serde_json::json!({ "action": "leave" }));
+                            show_main_window(app);
+                        }
+                        TrayIconEvent::Enter { position, .. } => {
+                            let _ = app.emit(
+                                "tray-hover",
+                                serde_json::json!({
+                                    "action": "enter",
+                                    "x": position.x,
+                                    "y": position.y,
+                                }),
+                            );
+                        }
+                        TrayIconEvent::Leave { .. } => {
+                            let _ = app.emit("tray-hover", serde_json::json!({ "action": "leave" }));
+                        }
+                        _ => {}
                     }
                 })
                 .build(app)?;

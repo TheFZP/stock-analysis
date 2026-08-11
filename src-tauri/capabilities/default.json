@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for main, mini and iwencai windows",
-  "windows": ["main", "mini", "iwencai"],
+  "description": "Capability for main, mini, iwencai and tray-popup windows",
+  "windows": ["main", "mini", "iwencai", "tray-popup"],
   "permissions": [
     "core:default",
     "opener:default",
@@ -13,6 +13,10 @@
     "core:window:allow-request-user-attention",
     "core:window:allow-set-focus",
     "core:window:allow-set-always-on-top",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
     "core:webview:allow-create-webview-window",
     "notification:default",
     "global-shortcut:default",

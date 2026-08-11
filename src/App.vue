@@ -31,7 +31,8 @@ import { deleteStockMessages } from "./composables/aiMessageStore";
 import { useUserProfileSingleton } from "./composables/useUserProfile";
 import { useWatchlistNotifications } from "./composables/useWatchlistNotifications";
 import { useSettings } from "./composables/useSettings";
-import { useTrayPositionsTooltip } from "./composables/useTrayPositionsTooltip";
+import { useTrayHoverPopup } from "./composables/useTrayHoverPopup";
+import TrayPositionsPopup from "./components/TrayPositionsPopup.vue";
 
 // ---- 侧边栏视图切换 ----
 const sidebarView = ref("watchlist");
@@ -41,6 +42,8 @@ const sidebarView = ref("watchlist");
 const isMiniMode = new URLSearchParams(window.location.search).has("mini");
 // 问财选股窗口以 ?iwencai=1 参数加载同一前端，渲染独立选股界面
 const isIwencaiMode = new URLSearchParams(window.location.search).has("iwencai");
+// 托盘悬停持仓弹窗
+const isTrayPopup = new URLSearchParams(window.location.search).has("tray");
 const appWindow = getCurrentWindow();
 
 /** 打开/聚焦迷你盯盘小窗 */
@@ -85,7 +88,7 @@ const stockListRef = ref(null);
 
 /** 注册全局快捷键：Ctrl+K 搜索 / Ctrl+N 打开全局 AI */
 async function setupGlobalShortcuts() {
-  if (isMiniMode || isIwencaiMode) return; // 子窗口不注册
+  if (isMiniMode || isIwencaiMode || isTrayPopup) return; // 子窗口不注册
   try {
     await register("CommandOrControl+K", () => {
       stockListRef.value?.focusSearch();
@@ -180,9 +183,6 @@ const showPositionsModal = ref(false);
 const positionPrefill = ref(null);
 const {
   positions,
-  positionStats,
-  totalProfit,
-  totalProfitPct,
   addPosition,
   removePosition,
   updatePositionQuote,
@@ -190,9 +190,11 @@ const {
 } = usePositions();
 const { loadProfile } = useUserProfileSingleton();
 
-// 主窗口：悬浮托盘图标时展示持仓盈亏摘要
-if (!isMiniMode && !isIwencaiMode) {
-  useTrayPositionsTooltip({ positionStats, totalProfit, totalProfitPct });
+const positionCount = computed(() => positions.value.length);
+
+// 主窗口：托盘悬停弹出完整持仓面板
+if (!isMiniMode && !isIwencaiMode && !isTrayPopup) {
+  useTrayHoverPopup({ positionCount });
 }
 
 async function handleAddPosition(pos) {
@@ -382,7 +384,7 @@ let unlistenIwencaiSelect = null;
 let unlistenIwencaiAdd = null;
 
 onMounted(() => {
-  if (isMiniMode || isIwencaiMode) return; // 子窗口不执行主窗口逻辑（自带独立刷新）
+  if (isMiniMode || isIwencaiMode || isTrayPopup) return; // 子窗口不执行主窗口逻辑（自带独立刷新）
 
   document.addEventListener("keydown", onKeydown);
   // 全局快捷键（Ctrl+K 搜索 / Ctrl+N 全局 AI）
@@ -471,7 +473,7 @@ async function refreshAllQuotes() {
 }
 
 onUnmounted(() => {
-  if (isMiniMode || isIwencaiMode) return;
+  if (isMiniMode || isIwencaiMode || isTrayPopup) return;
   document.removeEventListener("keydown", onKeydown);
   teardownGlobalShortcuts();
   if (unlistenMiniSelect) unlistenMiniSelect();
@@ -490,6 +492,9 @@ onUnmounted(() => {
 
   <!-- 问财选股窗口（?iwencai=1 参数加载） -->
   <IwencaiWindow v-else-if="isIwencaiMode" />
+
+  <!-- 托盘悬停持仓弹窗（?tray=1） -->
+  <TrayPositionsPopup v-else-if="isTrayPopup" />
 
   <div v-else class="app">
     <!-- 自定义标题栏 -->

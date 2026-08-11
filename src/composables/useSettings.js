@@ -26,6 +26,9 @@ const DEFAULTS = {
   klineMaPeriods: [5, 10, 20, 30],
   klineShow30DayHL: true,
 
+  // ── 持仓 ──
+  trayPositionsEnabled: false, // 系统托盘悬停显示持仓，默认关闭
+
   // ── AI ──
   aiModel: "deepseek-v4-flash",
   aiThinkingEnabled: true,

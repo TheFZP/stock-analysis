@@ -3,6 +3,7 @@ import { ref, watch } from "vue";
 import { signChar, fmtPct } from "../utils/format";
 import { useStockSearch } from "../composables/useStockSearch.js";
 import { usePositions } from "../composables/usePositions.js";
+import { useSettings } from "../composables/useSettings.js";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
 const props = defineProps({
@@ -16,6 +17,7 @@ const emit = defineEmits(["close", "add", "edit", "remove"]);
 
 // 盈亏计算（从 composable）
 const { positionStats, totalProfit, totalCost, totalMarketValue, totalProfitPct, hasHK, fxRate } = usePositions();
+const { state: settings } = useSettings();
 
 const showForm = ref(false);
 const editingCode = ref(null); // null = 新增, 非 null = 编辑对应 code
@@ -187,11 +189,21 @@ function handleCancelRemove() {
             </svg>
             <span class="modal-title">我的持仓</span>
           </div>
-          <button class="modal-close" @click="closeModal">
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <path d="M4 4L14 14M14 4L4 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-            </svg>
-          </button>
+          <div class="modal-header-right">
+            <label class="tray-toggle" title="开启后，鼠标悬停系统托盘图标时显示持仓概览">
+              <span class="tray-toggle-label">系统托盘显示</span>
+              <input
+                v-model="settings.trayPositionsEnabled"
+                type="checkbox"
+                class="toggle"
+              />
+            </label>
+            <button class="modal-close" @click="closeModal">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M4 4L14 14M14 4L4 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div class="modal-body">
@@ -361,6 +373,61 @@ function handleCancelRemove() {
 
 .modal-close {
   border-radius: 8px;
+}
+
+.modal-header-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* 系统托盘显示开关 */
+.tray-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tray-toggle-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.tray-toggle .toggle {
+  appearance: none;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.tray-toggle .toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.tray-toggle .toggle:checked {
+  background: var(--ink);
+}
+
+.tray-toggle .toggle:checked::after {
+  transform: translateX(16px);
 }
 
 .modal-body {
