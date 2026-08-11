@@ -73,7 +73,9 @@ pub fn run() {
                             let _ = app.emit("tray-hover", serde_json::json!({ "action": "leave" }));
                             show_main_window(app);
                         }
-                        TrayIconEvent::Enter { position, .. } => {
+                        TrayIconEvent::Enter { position, .. }
+                        | TrayIconEvent::Move { position, .. } => {
+                            // Move 一并通知：Windows 上 Enter 后常紧跟 Leave，静止悬停可能收不到二次 Enter
                             let _ = app.emit(
                                 "tray-hover",
                                 serde_json::json!({
@@ -83,8 +85,15 @@ pub fn run() {
                                 }),
                             );
                         }
-                        TrayIconEvent::Leave { .. } => {
-                            let _ = app.emit("tray-hover", serde_json::json!({ "action": "leave" }));
+                        TrayIconEvent::Leave { position, .. } => {
+                            let _ = app.emit(
+                                "tray-hover",
+                                serde_json::json!({
+                                    "action": "leave",
+                                    "x": position.x,
+                                    "y": position.y,
+                                }),
+                            );
                         }
                         _ => {}
                     }

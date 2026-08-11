@@ -94,6 +94,25 @@ export function usePositions() {
     }
   }
 
+  /** 从 localStorage 重新加载（托盘弹窗等独立窗口同步主窗口持仓用） */
+  function reloadPositions() {
+    const loaded = loadPositions();
+    // 保留内存中已有的实时行情字段
+    const quoteMap = new Map(
+      positions.value.map((p) => [p.code, p])
+    );
+    positions.value = loaded.map((p) => {
+      const prev = quoteMap.get(p.code);
+      if (!prev) return p;
+      return {
+        ...p,
+        price: prev.price ?? p.price,
+        change: prev.change ?? p.change,
+        changePct: prev.changePct ?? p.changePct,
+      };
+    });
+  }
+
   // ── 盈亏计算（原始币种）──
   const positionStats = computed(() => {
     return positions.value.map((p) => {
@@ -154,6 +173,7 @@ export function usePositions() {
     addPosition,
     removePosition,
     updatePositionQuote,
+    reloadPositions,
   };
   return _instance;
 }

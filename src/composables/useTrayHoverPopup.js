@@ -10,18 +10,20 @@ const TRAY_ID = "main";
 const POPUP_LABEL = "tray-popup";
 const POPUP_WIDTH = 280;
 const ROW_HEIGHT = 40;
-/** 一屏可见行数 */
 const PAGE_SIZE = 5;
 const HEADER_HEIGHT = 38;
 const FOOTER_HEIGHT = 30;
-/** 离开托盘/弹窗后的隐藏延迟（需覆盖移向弹窗的空隙时间） */
-const HIDE_DELAY_MS = 500;
+/** 离开托盘后延迟关闭（给鼠标移入弹窗的时间） */
+const TRAY_LEAVE_DELAY_MS = 280;
+/** Enter 后忽略 Leave 的宽限期（Windows 托盘常 Enter 后立刻 Leave） */
+const LEAVE_GRACE_MS = 450;
 /** 与任务栏顶部的间距（逻辑像素） */
 const TASKBAR_GAP = 56;
-/** 光标巡检间隔：防止 Leave / mouseleave 丢失导致弹窗残留 */
-const CURSOR_WATCH_MS = 350;
-/** 弹窗下方仍视为「途经区」的高度（逻辑像素，托盘空隙） */
-const BRIDGE_PAD = 72;
+const CURSOR_WATCH_MS = 400;
+/** 弹窗下方途经区（逻辑像素），需覆盖到托盘图标 */
+const BRIDGE_PAD = 120;
+/** 托盘热点半径（物理像素近似，按 DPI 再乘） */
+const TRAY_HOTSPOT = 40;
 
 function popupHeight(count) {
   const rows = Math.min(Math.max(count, 1), PAGE_SIZE);
@@ -29,8 +31,7 @@ function popupHeight(count) {
 }
 
 /**
- * 托盘悬停时弹出完整持仓面板（绕过原生 tooltip 字数限制）
- * 仅在主窗口调用；受 settings.trayPositionsEnabled 控制。
+ * 托盘悬停持仓弹窗；受 settings.trayPositionsEnabled 控制。
  */
 export function useTrayHoverPopup({ positionCount }) {
   const { state: settings } = useSettings();
@@ -38,6 +39,10 @@ export function useTrayHoverPopup({ positionCount }) {
   let cursorWatchTimer = null;
   let popupHovered = false;
   let isShown = false;
+  let showToken = 0;
+  let leaveGraceUntil = 0;
+  let lastTrayX = 0;
+  let lastTrayY = 0;
   let unlistenTray = null;
   let unlistenPopupHover = null;
 
@@ -55,12 +60,19 @@ export function useTrayHoverPopup({ positionCount }) {
     }
   }
 
-  /** 延迟后一律隐藏（不再被卡住的 popupHovered 挡住） */
-  function scheduleHide() {
+  function scheduleHide(delayMs = 0) {
     clearHideTimer();
+    const token = showToken;
+    if (delayMs <= 0) {
+      if (token === showToken) hidePopup();
+      return;
+    }
     hideTimer = setTimeout(() => {
+      // 宽限期内或已有更新的展示，不关
+      if (Date.now() < leaveGraceUntil) return;
+      if (token !== showToken) return;
       hidePopup();
-    }, HIDE_DELAY_MS);
+    }, delayMs);
   }
 
   function startCursorWatch() {
@@ -70,10 +82,18 @@ export function useTrayHoverPopup({ positionCount }) {
     }, CURSOR_WATCH_MS);
   }
 
+  function isNearTray(cursorX, cursorY, factor) {
+    const r = TRAY_HOTSPOT * factor;
+    return (
+      Math.abs(cursorX - lastTrayX) <= r * 2 &&
+      Math.abs(cursorY - lastTrayY) <= r * 2
+    );
+  }
+
   async function checkCursorStillRelated() {
     if (!isShown) return;
-    // 鼠标明确在弹窗内时不强制关
     if (popupHovered) return;
+    if (Date.now() < leaveGraceUntil) return;
 
     try {
       const win = await WebviewWindow.getByLabel(POPUP_LABEL);
@@ -98,16 +118,17 @@ export function useTrayHoverPopup({ positionCount }) {
         cursor.y >= top &&
         cursor.y <= bottom;
 
-      // 弹窗正下方到托盘之间的空隙，移动过程中不算离开
       const inBridge =
-        cursor.x >= left - 24 &&
-        cursor.x <= right + 24 &&
+        cursor.x >= left - 40 &&
+        cursor.x <= right + 40 &&
         cursor.y > bottom &&
         cursor.y <= bottom + pad;
 
-      if (!inPopup && !inBridge) {
-        hidePopup();
+      if (inPopup || inBridge || isNearTray(cursor.x, cursor.y, factor)) {
+        return;
       }
+
+      hidePopup();
     } catch {
       /* ignore */
     }
@@ -143,15 +164,7 @@ export function useTrayHoverPopup({ positionCount }) {
     return win;
   }
 
-  async function showPopup(x, y) {
-    if (!settings.trayPositionsEnabled) {
-      hidePopup();
-      return;
-    }
-    clearHideTimer();
-    const win = await ensurePopup();
-    if (!win) return;
-
+  async function applyPopupLayout(win, x, y) {
     const count = Math.max(positionCount?.value ?? 0, 0);
     const height = popupHeight(count);
 
@@ -177,10 +190,38 @@ export function useTrayHoverPopup({ positionCount }) {
     } catch {
       /* ignore */
     }
+    return height;
+  }
+
+  async function showPopup(x, y) {
+    if (!settings.trayPositionsEnabled) {
+      hidePopup();
+      return;
+    }
+
+    lastTrayX = x;
+    lastTrayY = y;
+    leaveGraceUntil = Date.now() + LEAVE_GRACE_MS;
+    clearHideTimer();
+
+    // 已显示：只续期，不跟随鼠标挪动位置（Move 很频繁）
+    if (isShown) {
+      return;
+    }
+
+    showToken += 1;
+    const token = showToken;
+
+    const win = await ensurePopup();
+    if (!win || token !== showToken) return;
+
+    await applyPopupLayout(win, x, y);
+    if (token !== showToken) return;
 
     try {
       await win.show();
       isShown = true;
+      leaveGraceUntil = Date.now() + LEAVE_GRACE_MS;
       startCursorWatch();
       await emit("tray-popup-show");
     } catch {
@@ -220,7 +261,12 @@ export function useTrayHoverPopup({ positionCount }) {
         if (!settings.trayPositionsEnabled) return;
         showPopup(Number(payload.x) || 0, Number(payload.y) || 0);
       } else if (payload.action === "leave") {
-        scheduleHide();
+        if (Date.now() < leaveGraceUntil) return;
+        if (payload.x != null && payload.y != null) {
+          lastTrayX = Number(payload.x);
+          lastTrayY = Number(payload.y);
+        }
+        scheduleHide(TRAY_LEAVE_DELAY_MS);
       }
     });
 
@@ -229,12 +275,12 @@ export function useTrayHoverPopup({ positionCount }) {
       popupHovered = inside;
       if (inside) {
         clearHideTimer();
+        leaveGraceUntil = Date.now() + LEAVE_GRACE_MS;
       } else {
-        scheduleHide();
+        scheduleHide(0);
       }
     });
 
-    // 关闭开关时立即收起弹窗
     watch(
       () => settings.trayPositionsEnabled,
       (enabled) => {

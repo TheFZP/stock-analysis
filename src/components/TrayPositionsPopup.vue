@@ -18,6 +18,7 @@ const {
   totalProfitPct,
   totalMarketValue,
   updatePositionQuote,
+  reloadPositions,
 } = usePositions();
 const { loadQuotesBatch } = useQuoteLoader();
 
@@ -28,12 +29,18 @@ const displayStats = computed(() => positionStats.value.slice(0, MAX_DISPLAY));
 const totalCount = computed(() => positionStats.value.length);
 const hasMore = computed(() => totalCount.value > MAX_DISPLAY);
 
-async function refreshQuotes() {
+async function refreshAll() {
+  // 托盘是独立窗口，需从 localStorage 同步主窗口最新持仓
+  reloadPositions();
   const codes = positions.value.map((p) => p.code);
-  if (codes.length === 0) return;
+  if (codes.length === 0) {
+    lastUpdated.value = "";
+    return;
+  }
   const quotes = await loadQuotesBatch(codes);
-  if (!quotes) return;
-  quotes.forEach((q) => updatePositionQuote(q.code, q));
+  if (quotes) {
+    quotes.forEach((q) => updatePositionQuote(q.code, q));
+  }
   lastUpdated.value = new Date().toLocaleTimeString("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
@@ -53,12 +60,11 @@ let timer = null;
 let unlistenShow = null;
 
 onMounted(async () => {
-  await refreshQuotes();
-  timer = setInterval(refreshQuotes, 10000);
+  await refreshAll();
+  timer = setInterval(refreshAll, 10000);
   unlistenShow = await listen("tray-popup-show", () => {
-    refreshQuotes();
+    refreshAll();
   });
-  // 窗口失焦时也视为离开，避免 mouseleave 丢失导致弹窗残留
   window.addEventListener("blur", onLeave);
 });
 
