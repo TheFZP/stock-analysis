@@ -499,23 +499,26 @@ const flowTiers = computed(() => {
   background: var(--green-bg);
 }
 
-/* ===== 四维数据网格 ===== */
+/* ===== 四维数据网格（紧凑横排，给图表留高） ===== */
 .meta-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 0;
   border-top: 1px solid var(--border);
   border-left: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   overflow: hidden;
-  margin-bottom: 24px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
 .meta-item {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px 16px;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
@@ -524,14 +527,15 @@ const flowTiers = computed(() => {
   font-size: 11px;
   color: var(--text-muted);
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
+  flex-shrink: 0;
 }
 
 .meta-value {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .meta-value.up { color: var(--red); }
@@ -539,18 +543,19 @@ const flowTiers = computed(() => {
 
 /* ===== 主力资金流向 ===== */
 .flow-section {
-  margin-bottom: 20px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .flow-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 0;
 }
 
 .flow-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   flex-shrink: 0;
@@ -605,7 +610,7 @@ const flowTiers = computed(() => {
 }
 
 .flow-text {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -624,15 +629,15 @@ const flowTiers = computed(() => {
 .flow-tiers {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 4px 24px;
-  margin-top: 10px;
+  gap: 2px 16px;
+  margin-top: 6px;
 }
 
 .flow-tier {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  font-size: 13px;
+  gap: 6px;
+  font-size: 12px;
 }
 
 .tier-name {
@@ -857,7 +862,7 @@ const flowTiers = computed(() => {
   flex: 1;
   min-height: 0;
   height: auto;
-  max-height: 420px;
+  max-height: none;
 }
 
 .kline-flex-wrap :deep(.kline-chart) {
