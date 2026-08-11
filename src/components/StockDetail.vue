@@ -16,6 +16,7 @@ const props = defineProps({
   moneyFlow: { type: Object, default: null },
   moneyFlowLoading: { type: Boolean, default: false },
   watchlistMarkers: { type: Array, default: () => [] },
+  positions: { type: Array, default: () => [] },
 });
 
 const emit = defineEmits([
@@ -26,6 +27,7 @@ const emit = defineEmits([
   "open-ai-modal",
   "open-chip-modal",
   "load-intraday",
+  "add-position",
 ]);
 
 const chartMode = ref("intraday"); // "kline" | "intraday"
@@ -78,6 +80,10 @@ function switchChartMode(mode) {
 
 function isInWatchlist(code) {
   return props.watchlist.some((s) => s.code === code);
+}
+
+function isInPositions(code) {
+  return props.positions.some((p) => p.code === code);
 }
 
 /** 自选以来涨跌幅 */
@@ -178,6 +184,13 @@ const flowTiers = computed(() => {
               <path d="M12 2L14.09 8.26L20 9.27L15.5 13.97L16.82 20L12 16.77L7.18 20L8.5 13.97L4 9.27L9.91 8.26L12 2Z" fill="currentColor" stroke="currentColor" stroke-width="0.5"/>
             </svg>
             <span>AI 分析</span>
+          </button>
+          <button
+            class="btn btn-position"
+            :class="{ 'in-position': selectedStock && isInPositions(selectedStock.code) }"
+            @click="selectedStock && $emit('add-position', selectedStock)"
+          >
+            {{ selectedStock && isInPositions(selectedStock.code) ? "✓ 已持仓" : "+ 加入持仓" }}
           </button>
           <button
             class="btn btn-ghost"
@@ -780,6 +793,27 @@ const flowTiers = computed(() => {
   background: var(--rust);
   color: #fff;
   box-shadow: var(--shadow-elevated);
+}
+
+/* 加入持仓 */
+.btn-position {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid rgba(231, 76, 60, 0.45);
+  transition: all 0.15s;
+}
+.btn-position:hover {
+  background: var(--red-bg);
+  border-color: var(--red);
+  color: var(--red);
+}
+.btn-position.in-position {
+  color: var(--green);
+  border-color: var(--green);
+  background: transparent;
+}
+.btn-position.in-position:hover {
+  background: var(--green-bg);
 }
 
 /* 窄窗：按钮缩小，仍保持右对齐 */

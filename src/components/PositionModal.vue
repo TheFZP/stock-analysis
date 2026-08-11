@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { signChar, fmtPct } from "../utils/format";
 import { useStockSearch } from "../composables/useStockSearch.js";
 import { usePositions } from "../composables/usePositions.js";
@@ -8,6 +8,8 @@ import ConfirmDialog from "./ConfirmDialog.vue";
 const props = defineProps({
   show: { type: Boolean, default: false },
   positions: { type: Array, default: () => [] },
+  /** 从详情页「加入持仓」预填：{ code, name, price? } */
+  prefillStock: { type: Object, default: null },
 });
 
 const emit = defineEmits(["close", "add", "edit", "remove"]);
@@ -73,9 +75,15 @@ function closeModal() {
   emit("close");
 }
 
-function openAddForm() {
+function openAddForm(stock = null) {
   editingCode.value = null;
-  form.value = { code: "", name: "", buyPrice: "", quantity: "", buyDate: "" };
+  form.value = {
+    code: stock?.code || "",
+    name: stock?.name || "",
+    buyPrice: stock?.price != null ? String(stock.price) : "",
+    quantity: "",
+    buyDate: "",
+  };
   formError.value = "";
   clearStockSearch();
   showForm.value = true;
@@ -94,6 +102,20 @@ function openEditForm(pos) {
   clearStockSearch();
   showForm.value = true;
 }
+
+/** 弹窗打开且带预填股票时：已持仓则编辑，否则新增并预填代码/名称/现价 */
+watch(
+  () => [props.show, props.prefillStock],
+  ([show, stock]) => {
+    if (!show || !stock?.code) return;
+    const existing = props.positions.find((p) => p.code === stock.code);
+    if (existing) {
+      openEditForm(existing);
+    } else {
+      openAddForm(stock);
+    }
+  }
+);
 
 function cancelForm() {
   editingCode.value = null;

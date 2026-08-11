@@ -176,6 +176,7 @@ function closeChipModal() { showChipModal.value = false; }
 
 // ---- 持仓弹窗 ----
 const showPositionsModal = ref(false);
+const positionPrefill = ref(null);
 const { positions, addPosition, removePosition, updatePositionQuote, setFxRate } = usePositions();
 const { loadProfile } = useUserProfileSingleton();
 
@@ -193,8 +194,24 @@ async function handleEditPosition(pos) {
   if (quote) updatePositionQuote(pos.code, quote);
 }
 
-function openPositionsModal() { showPositionsModal.value = true; }
-function closePositionsModal() { showPositionsModal.value = false; }
+function openPositionsModal() {
+  positionPrefill.value = null;
+  showPositionsModal.value = true;
+}
+function closePositionsModal() {
+  showPositionsModal.value = false;
+  positionPrefill.value = null;
+}
+
+function openAddPositionFromStock(stock) {
+  if (!stock) return;
+  positionPrefill.value = {
+    code: stock.code,
+    name: stock.name,
+    price: stock.price,
+  };
+  showPositionsModal.value = true;
+}
 
 // ---- 画像弹窗 ----
 const showProfileModal = ref(false);
@@ -504,6 +521,7 @@ onUnmounted(() => {
         :money-flow="moneyFlow"
         :money-flow-loading="moneyFlowLoading"
         :watchlist-markers="watchlistMarkers"
+        :positions="positions"
         @toggle-watchlist="toggleWatchlist"
         @change-kline-period="changeKlinePeriod"
         @open-industry-modal="onIndustryModalOpen"
@@ -511,6 +529,7 @@ onUnmounted(() => {
         @open-ai-modal="openAiModal"
         @open-chip-modal="openChipModal"
         @load-intraday="loadIntradayData(selectedStock)"
+        @add-position="openAddPositionFromStock"
       />
     </div>
 
@@ -565,6 +584,7 @@ onUnmounted(() => {
     <PositionModal
       :show="showPositionsModal"
       :positions="positions"
+      :prefill-stock="positionPrefill"
       @close="closePositionsModal"
       @add="handleAddPosition"
       @edit="handleEditPosition"
