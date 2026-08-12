@@ -919,4 +919,74 @@ const flowTiers = computed(() => {
   height: 100%;
   min-height: 200px;
 }
+
+/* ===== 宽窗口（>1200px）：右侧详情一屏放完，不出现滚动条 =====
+   内容压缩到一屏内展示；窗口变矮时图表区随之收缩（min-height: 0），
+   而不是像小窗口那样溢出由 .main-content 滚动 */
+@media (min-width: 1201px) {
+  .main-content {
+    overflow-y: hidden;
+  }
+  .detail-card {
+    padding: 16px 28px;
+  }
+  .stock-header {
+    margin-bottom: 10px;
+  }
+  .price-area {
+    margin-bottom: 12px;
+  }
+  .price {
+    font-size: 32px;
+  }
+  .chart-tabs {
+    margin-bottom: 8px;
+  }
+  /* 宽窗口：图表区域固定高度，不再弹性拉伸占满剩余空间。
+     图表高度受控（360px），底部信息栏紧贴图表完整显示，
+     既不产生图表与信息栏之间的空白，也不会因图表过大挤压信息栏 */
+  .kline-flex-wrap {
+    flex: none;
+  }
+  .kline-flex-wrap :deep(.kline-wrapper) {
+    flex: none;
+  }
+  .kline-flex-wrap :deep(.kline-chart-wrap) {
+    flex: none;
+    height: 480px;
+    max-height: none;
+  }
+  .kline-flex-wrap :deep(.kline-chart) {
+    min-height: 0;
+  }
+  .kline-flex-wrap :deep(.intraday-wrapper) {
+    flex: none;
+  }
+  .kline-flex-wrap :deep(.intraday-chart-wrap) {
+    flex: none;
+    height: 480px;
+    max-height: none;
+  }
+  .kline-flex-wrap :deep(.intraday-chart) {
+    min-height: 0;
+  }
+  .meta-grid {
+    margin-bottom: 14px;
+  }
+  .meta-item {
+    padding: 10px 14px;
+  }
+  .flow-section {
+    margin-bottom: 10px;
+  }
+  /* 宽窗口下资金分档 4 列单行，省出一行高度 */
+  .flow-tiers {
+    margin-top: 6px;
+    gap: 2px 24px;
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .btn {
+    padding: 6px 18px;
+  }
+}
 </style>
