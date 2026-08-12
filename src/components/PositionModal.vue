@@ -220,7 +220,7 @@ function handleCancelRemove() {
             <div class="summary-item">
               <span class="summary-label">总盈亏</span>
               <span class="summary-value" :class="totalProfit >= 0 ? 'up' : 'down'">
-                {{ signChar(totalProfit) }}¥{{ Math.abs(totalProfit).toFixed(2) }}
+                {{ signChar(totalProfit) }}{{ totalProfit.toFixed(2) }}
               </span>
             </div>
             <div class="summary-item">
@@ -253,7 +253,7 @@ function handleCancelRemove() {
                 <span class="position-detail">{{ p.quantity || 0 }} 股</span>
               </div>
               <div class="position-profit" :class="p.profit >= 0 ? 'up' : 'down'">
-                <span class="profit-amount">{{ signChar(p.profit) }}{{ p.currency }}{{ Math.abs(p.profit).toFixed(2) }}</span>
+                <span class="profit-amount">{{ signChar(p.profit) }}{{ (p.profit || 0).toFixed(2) }}</span>
                 <span class="profit-pct">{{ fmtPct(p.profitPct) }}</span>
               </div>
               <button class="position-remove" @click.stop="confirmRemove(p.code, p.name)" title="删除持仓">✕</button>

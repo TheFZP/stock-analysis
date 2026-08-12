@@ -86,7 +86,7 @@ onUnmounted(() => {
       <div class="tray-total" :class="totalProfit >= 0 ? 'up' : 'down'">
         <span class="tray-total-label">总盈亏</span>
         <span class="tray-total-value">
-          {{ signChar(totalProfit) }}¥{{ Math.abs(totalProfit).toFixed(2) }}
+          {{ signChar(totalProfit) }}{{ totalProfit.toFixed(2) }}
         </span>
         <span class="tray-total-pct">{{ fmtPct(totalProfitPct) }}</span>
       </div>
@@ -115,7 +115,7 @@ onUnmounted(() => {
         </div>
         <div class="tray-row-right" :class="p.profit >= 0 ? 'up' : 'down'">
           <span class="tray-profit">
-            {{ signChar(p.profit) }}{{ p.currency }}{{ Math.abs(p.profit).toFixed(2) }}
+            {{ signChar(p.profit) }}{{ (p.profit || 0).toFixed(2) }}
           </span>
           <span class="tray-pct">{{ fmtPct(p.profitPct) }}</span>
         </div>
