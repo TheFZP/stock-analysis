@@ -94,8 +94,16 @@ fn compare_versions(a: &str, b: &str) -> i32 {
 }
 
 /// 检查 GitHub Releases 最新版本（限流 60 次/小时/IP，无认证）
+/// 国内网络直连 api.github.com 不通时，自动回退到系统代理重试
 #[tauri::command]
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
+    let json = match fetch_latest_release(crate::api::build_http_client()?).await {
+        Ok(v) => v,
+        Err(_) => {
+            // 直连失败（超时/连接重置等），尝试走系统代理（国内访问 GitHub 需要代理）
+            fetch_latest_release(crate::api::build_proxy_http_client()?).await?
+        }
+    };
     let client = crate::api::build_http_client()?;
     let resp = client
         .get("https://api.github.com/repos/TheFZP/stock-analysis/releases/latest")
@@ -120,6 +128,31 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
         url,
         has_update,
     })
+}
+
+/// 请求 GitHub 最新 release 接口，返回解析后的 JSON
+async fn fetch_latest_release(
+    client: &reqwest::Client,
+) -> Result<serde_json::Value, String> {
+    let resp = client
+        .get("https://api.github.com/repos/PRHyzzza/stock-analysis/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "stock-analysis-updater")
+        .send()
+        .await
+        .map_err(|e| format!("请求 GitHub API 失败: {}", e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let hint = if status.as_u16() == 403 {
+            "（GitHub API 限流或需要代理）"
+        } else {
+            ""
+        };
+        return Err(format!("GitHub API 返回 HTTP {}{}", status, hint));
+    }
+    resp.json()
+        .await
+        .map_err(|e| format!("解析更新数据失败: {}", e))
 }
 
 /// 获取大盘指数实时行情（上证/深证/创业板/沪深300/科创50/中证500）

@@ -30,6 +30,7 @@ import { useIntradayData } from "./composables/useIntradayData";
 import { deleteStockMessages } from "./composables/aiMessageStore";
 import { useUserProfileSingleton } from "./composables/useUserProfile";
 import { useWatchlistNotifications } from "./composables/useWatchlistNotifications";
+import { useMaAlerts } from "./composables/useMaAlerts";
 import { useSettings } from "./composables/useSettings";
 import { useTrayHoverPopup } from "./composables/useTrayHoverPopup";
 import TrayPositionsPopup from "./components/TrayPositionsPopup.vue";
@@ -244,6 +245,7 @@ const { indices, loadIndices } = useMarketIndices();
 const { moneyFlow, moneyFlowLoading, loadMoneyFlow } = useMoneyFlow(selectedStock);
 const { intradayData, intradayLoading, loadIntradayData } = useIntradayData();
 const { checkAndNotify } = useWatchlistNotifications();
+const { configs: maAlerts, checkMaAlerts } = useMaAlerts();
 const { state: settings } = useSettings();
 
 // 计算当前选中股票的"加入自选"标记
@@ -443,8 +445,9 @@ watch(
 );
 
 async function refreshAllQuotes() {
-  // 自选股批量刷新（A 股一次请求，大幅减少 HTTP 请求数）
-  const codes = watchlist.value.map((s) => s.code);
+  // 自选股 + 已配置均线提醒的股票（可能不在自选列表）批量刷新（A 股一次请求，大幅减少 HTTP 请求数）
+  const maCodes = Object.keys(maAlerts.value);
+  const codes = [...new Set([...watchlist.value.map((s) => s.code), ...maCodes])];
   if (codes.length > 0) {
     const quotes = await loadQuotesBatch(codes);
     if (quotes) {
@@ -454,6 +457,12 @@ async function refreshAllQuotes() {
         if (quote) {
           updateWatchlistQuote(stock.code, quote);
           checkAndNotify(quote, settings);
+        }
+      });
+      // 均线提醒检查（每只配置过的股票只检查一次；K 线内部 5 分钟缓存，不会高频请求）
+      quotes.forEach((quote) => {
+        if (maCodes.includes(quote.code)) {
+          checkMaAlerts(quote, settings).catch(() => {});
         }
       });
     }
