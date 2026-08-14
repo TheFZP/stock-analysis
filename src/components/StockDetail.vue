@@ -1,10 +1,13 @@
 <script setup>
 import KlineChart from "./KlineChart.vue";
 import IntradayChart from "./IntradayChart.vue";
-import MaAlertModal from "./MaAlertModal.vue";
-import { signChar, fmtMoney, fmtPct } from "../utils/format";
+import MoneyFlowModal from "./MoneyFlowModal.vue";
+import AlertsModal from "./AlertsModal.vue";
+import DetailActionBar from "./DetailActionBar.vue";
+import { signChar } from "../utils/format";
 import { useT0Signals } from "../composables/useT0Signals.js";
 import { useMaAlerts } from "../composables/useMaAlerts.js";
+import { usePriceAlerts } from "../composables/usePriceAlerts.js";
 import { ref, computed, watch } from "vue";
 
 const props = defineProps({
@@ -17,6 +20,8 @@ const props = defineProps({
   intradayLoading: { type: Boolean, default: false },
   moneyFlow: { type: Object, default: null },
   moneyFlowLoading: { type: Boolean, default: false },
+  moneyFlowHistory: { type: Array, default: null },
+  moneyFlowHistoryLoading: { type: Boolean, default: false },
   watchlistMarkers: { type: Array, default: () => [] },
   positions: { type: Array, default: () => [] },
 });
@@ -36,13 +41,29 @@ const chartMode = ref("intraday"); // "kline" | "intraday"
 const showSR = ref(false);
 const klineChartRef = ref(null);
 
-/** 均线提醒弹窗 */
+/** 均线提醒配置（合并弹窗「均线提醒」Tab 用） */
 const { getConfig: getMaConfig } = useMaAlerts();
-const showMaAlertModal = ref(false);
 
-/** 当前股票是否已配置均线提醒（按钮高亮 + 周期数徽标） */
+/** 价格提醒数量（合并弹窗「价格提醒」Tab 用） */
+const { countEnabledForCode: countPriceAlerts } = usePriceAlerts();
+
+/** 合并提醒弹窗 / 资金流向弹窗 */
+const showAlertsModal = ref(false);
+const showMoneyFlowModal = ref(false);
+
+/** 当前股票是否已配置均线提醒（合并按钮徽标用） */
 const maAlertActive = computed(() =>
   props.selectedStock ? getMaConfig(props.selectedStock.code) : null
+);
+
+/** 当前股票启用中的价格提醒数量（合并按钮徽标用） */
+const priceAlertCount = computed(() =>
+  props.selectedStock ? countPriceAlerts(props.selectedStock.code) : 0
+);
+
+/** 提醒按钮徽标：均线周期数 + 价格提醒数 */
+const alertCount = computed(
+  () => (maAlertActive.value?.periods?.length || 0) + priceAlertCount.value
 );
 
 /** 港股识别与货币符号 */
@@ -70,15 +91,6 @@ watch(
 function handleToggleSR() {
   showSR.value = !showSR.value;
   klineChartRef.value?.toggleSR();
-}
-
-function t0DirectionTooltip(summary) {
-  if (!summary) return '';
-  const d = summary.direction;
-  const trend = summary.raw.trend;
-  if (d === '正T为主') return `日线趋势「${trend}」→ 低吸高抛，先买后卖`;
-  if (d === '反T为主') return `日线趋势「${trend}」→ 高抛低吸，先卖后买`;
-  return `日线趋势「${trend}」→ 方向不明，建议观望`;
 }
 
 function switchChartMode(mode) {
@@ -113,23 +125,6 @@ const sinceAddedPct = computed(() => {
   const addedKline = klines.find((k) => k.date === stock.addedAt);
   if (!addedKline?.close || addedKline.close === 0) return null;
   return ((currentPrice - addedKline.close) / addedKline.close) * 100;
-});
-
-/** 资金流向分档明细（超大单/大单/中单/小单） */
-const flowTiers = computed(() => {
-  const mf = props.moneyFlow;
-  if (!mf) return [];
-  const tiers = [
-    { key: "super", label: "超大单", net: mf.superLargeNet, pct: mf.superLargePct },
-    { key: "large", label: "大单", net: mf.largeNet, pct: mf.largePct },
-    { key: "medium", label: "中单", net: mf.mediumNet, pct: mf.mediumPct },
-    { key: "small", label: "小单", net: mf.smallNet, pct: mf.smallPct },
-  ];
-  return tiers.map((t) => ({
-    ...t,
-    net: t.net ?? 0,
-    pct: t.pct ?? 0,
-  }));
 });
 </script>
 
@@ -303,122 +298,55 @@ const flowTiers = computed(() => {
         </div>
       </div>
 
-      <!-- 主力资金流向 + T+0 信号 -->
-      <div v-if="selectedStock" class="flow-section">
-        <div class="flow-header">
-          <span class="flow-title">主力资金</span>
-          <template v-if="moneyFlow">
-            <span class="flow-text" :class="(moneyFlow.mainNetInflow ?? 0) >= 0 ? 'inflow' : 'outflow'">
-              {{ fmtMoney(moneyFlow.mainNetInflow) }}
-            </span>
-            <span class="flow-pct-text" :class="(moneyFlow.mainNetInflow ?? 0) >= 0 ? 'inflow' : 'outflow'">
-              {{ fmtPct(moneyFlow.mainNetPct) }}
-            </span>
-          </template>
-          <template v-else-if="!moneyFlowLoading">
-            <span class="flow-text">--</span>
-          </template>
-          <span v-if="moneyFlowLoading" class="flow-loading">加载中...</span>
-
-          <!-- T+0 信号 -->
-          <template v-if="chartMode === 'intraday' && t0Summary && t0Summary.hasSignal">
-            <span class="flow-sep">|</span>
-            <span
-              class="t0-badge-inline"
-              :class="{
-                'dir-up': t0Summary.direction === '正T为主',
-                'dir-down': t0Summary.direction === '反T为主',
-                'dir-wait': t0Summary.direction === '观望',
-              }"
-              :title="t0DirectionTooltip(t0Summary)"
-            >{{ t0Summary.direction }}</span>
-            <span
-              v-for="(sig, idx) in t0Summary.signals"
-              :key="idx"
-              class="t0-chip-inline"
-              :title="sig.desc + '\n💡 ' + sig.action"
-            >{{ sig.name }}</span>
-          </template>
-        </div>
-
-        <!-- 全部分档资金 -->
-        <div v-if="moneyFlow" class="flow-tiers">
-          <div class="flow-tier" v-for="tier in flowTiers" :key="tier.key">
-            <span class="tier-name">{{ tier.label }}</span>
-            <span class="tier-value" :class="tier.net >= 0 ? 'inflow' : 'outflow'">
-              {{ fmtMoney(tier.net) }}
-            </span>
-            <span class="tier-pct" :class="tier.net >= 0 ? 'inflow' : 'outflow'">
-              {{ fmtPct(tier.pct) }}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div class="action-bar">
-        <button v-if="!isHK" class="btn btn-industry" @click="$emit('open-industry-modal')">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="2" y="8" width="3" height="6" rx="0.5"/>
-            <rect x="6.5" y="5.5" width="3" height="8.5" rx="0.5"/>
-            <rect x="11" y="3" width="3" height="11" rx="0.5"/>
-          </svg>
-          <span>行业分析</span>
-        </button>
-        <button class="btn btn-tech" @click="$emit('open-tech-modal')">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M2 14L14 2M2 14l4-1M2 14l1-4" stroke-linejoin="round"/>
-            <circle cx="12" cy="4" r="1" fill="currentColor"/>
-          </svg>
-          <span>技术分析</span>
-        </button>
-        <button class="btn btn-sr" :class="{ active: showSR }" @click="handleToggleSR">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <circle cx="4" cy="4" r="1.5" fill="#27ae60"/>
-            <circle cx="12" cy="8" r="1.5" fill="#e74c3c"/>
-            <circle cx="7" cy="12" r="1.5" fill="#7c3aed"/>
-          </svg>
-          <span>支撑/阻力</span>
-        </button>
-        <button class="btn btn-chip" @click="$emit('open-chip-modal')">
-          <svg width="18" height="18" viewBox="0 0 20 18" fill="none">
-            <path d="M1 16 6 9l3.5 3L14 3l5 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-            <circle cx="14" cy="3" r="2.8" fill="currentColor" opacity="0.85"/>
-            <path d="M1 16h18" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-          </svg>
-          <span>筹码峰</span>
-        </button>
-        <button class="btn btn-ma" :class="{ active: maAlertActive }" @click="showMaAlertModal = true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-            <path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M10 20a2 2 0 0 0 4 0" stroke-linecap="round"/>
-          </svg>
-          <span>均线提醒</span>
-          <span v-if="maAlertActive" class="ma-badge">{{ maAlertActive.periods.length }}</span>
-        </button>
-        <button class="btn btn-ai" @click="$emit('open-ai-modal')">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2L14.09 8.26L20 9.27L15.5 13.97L16.82 20L12 16.77L7.18 20L8.5 13.97L4 9.27L9.91 8.26L12 2Z" fill="currentColor" stroke="currentColor" stroke-width="0.5"/>
-          </svg>
-          <span>AI 分析</span>
-        </button>
-        <button
-          class="btn btn-ghost"
-          :class="{ 'in-watchlist': selectedStock && isInWatchlist(selectedStock.code) }"
-          @click="selectedStock && $emit('toggle-watchlist', selectedStock)"
-        >
-          {{ selectedStock && isInWatchlist(selectedStock.code) ? "✓ 已自选" : "+ 加自选" }}
-        </button>
-      </div>
+      <!-- 操作按钮栏 -->
+      <DetailActionBar
+        :is-hk="isHK"
+        :show-sr="showSR"
+        :alert-count="alertCount"
+        :selected-stock="selectedStock"
+        :in-watchlist="selectedStock && isInWatchlist(selectedStock.code)"
+        @open-industry-modal="emit('open-industry-modal')"
+        @open-tech-modal="emit('open-tech-modal')"
+        @toggle-sr="handleToggleSR"
+        @open-chip-modal="emit('open-chip-modal')"
+        @open-money-flow="showMoneyFlowModal = true"
+        @open-alerts="showAlertsModal = true"
+        @open-ai-modal="emit('open-ai-modal')"
+        @toggle-watchlist="emit('toggle-watchlist', $event)"
+      />
     </section>
 
-    <!-- 均线提醒配置弹窗 -->
-    <MaAlertModal
-      :show="showMaAlertModal"
+    <!-- 空状态：未选中股票 -->
+    <div v-else class="detail-empty">
+      <svg width="56" height="56" viewBox="0 0 56 56" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 42 20 28l8 7 12-16 8 9" />
+        <path d="M8 42h40" opacity="0.4" />
+        <circle cx="40" cy="12" r="5" opacity="0.5" />
+      </svg>
+      <p class="detail-empty-title">从左侧选择一只股票</p>
+      <p class="detail-empty-sub">或按 Ctrl+K 搜索 · 问财选股窗口双击结果也可联动</p>
+    </div>
+
+    <!-- 资金流向弹窗（主力资金 + 分档 + T+0 信号 + 历史柱状图） -->
+    <MoneyFlowModal
+      :show="showMoneyFlowModal"
+      :stock="selectedStock"
+      :money-flow="moneyFlow"
+      :money-flow-loading="moneyFlowLoading"
+      :money-flow-history="moneyFlowHistory"
+      :money-flow-history-loading="moneyFlowHistoryLoading"
+      :t0-summary="t0Summary"
+      :chart-mode="chartMode"
+      @close="showMoneyFlowModal = false"
+    />
+
+    <!-- 合并提醒弹窗（均线提醒 / 价格提醒） -->
+    <AlertsModal
+      :show="showAlertsModal"
       :stock="selectedStock"
       :kline-data="klineData"
       :kline-period="klinePeriod"
-      @close="showMaAlertModal = false"
+      @close="showAlertsModal = false"
     />
   </main>
 </template>
@@ -475,6 +403,9 @@ const flowTiers = computed(() => {
   display: flex;
   align-items: center;
   gap: 4px;
+  padding: 4px 14px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
   padding: 3px 8px;
   border-radius: 6px;
   font-size: 12px;
@@ -502,6 +433,8 @@ const flowTiers = computed(() => {
   align-items: baseline;
   gap: 8px;
   min-width: 0;
+  align-items: center;
+  gap: 10px;
 }
 
 .stock-name {
@@ -511,6 +444,7 @@ const flowTiers = computed(() => {
   white-space: nowrap;
   line-height: 1.2;
   margin: 0;
+  color: var(--text-primary);
 }
 
 .stock-code {
@@ -523,9 +457,8 @@ const flowTiers = computed(() => {
 .market-badge {
   font-size: 11px;
   font-weight: 600;
-  padding: 1px 7px;
-  border-radius: 6px;
-  margin-left: 6px;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
 }
 .market-badge.market-hk {
   color: #b45309;
@@ -536,9 +469,8 @@ const flowTiers = computed(() => {
 .since-added {
   font-size: 12px;
   font-weight: 700;
-  padding: 2px 10px;
-  border-radius: 12px;
-  margin-left: 4px;
+  padding: 3px 12px;
+  border-radius: var(--radius-full);
   white-space: nowrap;
 }
 .since-added.up {
@@ -588,6 +520,8 @@ const flowTiers = computed(() => {
 .price-pct {
   font-size: 13px;
   font-weight: 600;
+  padding: 3px 14px;
+  border-radius: var(--radius-full);
   padding: 1px 8px;
   border-radius: 5px;
 }
@@ -603,6 +537,7 @@ const flowTiers = computed(() => {
 }
 
 /* ===== 四维数据网格（紧凑横排，给图表留高） ===== */
+/* ===== 四维数据网格 — 柔和卡片式 ===== */
 .meta-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -613,6 +548,21 @@ const flowTiers = computed(() => {
   overflow: hidden;
   margin-bottom: 10px;
   flex-shrink: 0;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+/* 窗口较窄时数据网格降为 2 列 */
+@media (max-width: 1024px) {
+  .meta-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .meta-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .meta-item {
@@ -624,6 +574,11 @@ const flowTiers = computed(() => {
   padding: 6px 10px;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--fog);
 }
 
 .meta-label {
@@ -636,6 +591,7 @@ const flowTiers = computed(() => {
 
 .meta-value {
   font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -644,6 +600,7 @@ const flowTiers = computed(() => {
 .meta-value.up { color: var(--red); }
 .meta-value.down { color: var(--green); }
 
+/* ===== 图表切换标签 — 胶囊分段控件 ===== */
 /* ===== 主力资金流向 ===== */
 .flow-section {
   margin-bottom: 8px;
@@ -972,18 +929,18 @@ const flowTiers = computed(() => {
 /* ===== 图表切换标签 ===== */
 .chart-tabs {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   margin-bottom: 12px;
   background: var(--bg);
-  border-radius: 8px;
+  border-radius: var(--radius-full);
   padding: 3px;
   width: fit-content;
 }
 
 .chart-tab {
-  padding: 6px 16px;
+  padding: 6px 18px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-full);
   font-size: 12px;
   font-weight: 600;
   font-family: inherit;
@@ -1032,27 +989,26 @@ const flowTiers = computed(() => {
   min-height: 200px;
 }
 
-/* ===== 宽窗口（>1200px）：右侧详情一屏放完，不出现滚动条 =====
-   内容压缩到一屏内展示；窗口变矮时图表区随之收缩（min-height: 0），
-   而不是像小窗口那样溢出由 .main-content 滚动 */
+/* ===== 宽窗口（>1200px）：右侧详情更舒展 =====
+   内容够高时一屏展示、无滚动条；内容超高时自动出现滚动条 */
 @media (min-width: 1201px) {
   .main-content {
-    overflow-y: hidden;
+    overflow-y: auto;
   }
   .detail-card {
-    padding: 16px 28px;
+    padding: 20px 28px;
   }
   .stock-header {
-    margin-bottom: 10px;
+    margin-bottom: 14px;
   }
   .price-area {
-    margin-bottom: 12px;
+    margin-bottom: 16px;
   }
   .price {
-    font-size: 32px;
+    font-size: 36px;
   }
   .chart-tabs {
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
   /* 宽窗口：图表区域固定高度，不再弹性拉伸占满剩余空间。
      图表高度受控（360px），底部信息栏紧贴图表完整显示，
@@ -1083,22 +1039,40 @@ const flowTiers = computed(() => {
     min-height: 0;
   }
   .meta-grid {
-    margin-bottom: 14px;
+    margin-bottom: 18px;
   }
   .meta-item {
-    padding: 10px 14px;
+    padding: 12px 14px;
   }
-  .flow-section {
-    margin-bottom: 10px;
-  }
-  /* 宽窗口下资金分档 4 列单行，省出一行高度 */
-  .flow-tiers {
-    margin-top: 6px;
-    gap: 2px 24px;
-    grid-template-columns: repeat(4, 1fr);
-  }
-  .btn {
-    padding: 6px 18px;
-  }
+}
+
+/* ===== 空状态 ===== */
+.detail-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card-bg);
+}
+.detail-empty svg {
+  opacity: 0.4;
+  margin-bottom: 10px;
+}
+.detail-empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.detail-empty-sub {
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.8;
 }
 </style>

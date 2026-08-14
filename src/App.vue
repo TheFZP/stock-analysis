@@ -2,9 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen } from "@tauri-apps/api/event";
-import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import TitleBar from "./components/TitleBar.vue";
 import MarketHeader from "./components/MarketHeader.vue";
 import StockList from "./components/StockList.vue";
@@ -31,6 +29,9 @@ import { deleteStockMessages } from "./composables/aiMessageStore";
 import { useUserProfileSingleton } from "./composables/useUserProfile";
 import { useWatchlistNotifications } from "./composables/useWatchlistNotifications";
 import { useMaAlerts } from "./composables/useMaAlerts";
+import { usePriceAlerts } from "./composables/usePriceAlerts";
+import { useChildWindows } from "./composables/useChildWindows";
+import { useGlobalShortcuts } from "./composables/useGlobalShortcuts";
 import { useSettings } from "./composables/useSettings";
 import { useTrayHoverPopup } from "./composables/useTrayHoverPopup";
 import TrayPositionsPopup from "./components/TrayPositionsPopup.vue";
@@ -47,46 +48,17 @@ const isIwencaiMode = new URLSearchParams(window.location.search).has("iwencai")
 const isTrayPopup = new URLSearchParams(window.location.search).has("tray");
 const appWindow = getCurrentWindow();
 
-/** 打开/聚焦迷你盯盘小窗 */
-async function openMiniWindow() {
-  // getByLabel 是 async 方法，必须 await（否则拿到的是 Promise）
-  const existing = await WebviewWindow.getByLabel("mini");
-  if (existing) {
-    existing.setFocus();
-    return;
-  }
-  await new WebviewWindow("mini", {
-    url: `${window.location.origin}${window.location.pathname}?mini=1`,
-    title: "盯盘小窗",
-    width: 280,
-    height: 300,
-    decorations: false,
-    alwaysOnTop: true,
-    resizable: true,
-  });
-}
-
-/** 打开/聚焦问财选股窗口 */
-async function openIwencaiWindow() {
-  const existing = await WebviewWindow.getByLabel("iwencai");
-  if (existing) {
-    existing.setFocus();
-    return;
-  }
-  await new WebviewWindow("iwencai", {
-    url: `${window.location.origin}${window.location.pathname}?iwencai=1`,
-    title: "问财选股",
-    width: 960,
-    height: 720,
-    minWidth: 640,
-    minHeight: 480,
-    resizable: true,
-  });
-}
+// ---- 子窗口管理（迷你/问财，复用已存在窗口）----
+const { openMiniWindow, openIwencaiWindow } = useChildWindows();
 
 // 自选列表组件引用（Ctrl+K 聚焦搜索框用）
 const stockListRef = ref(null);
 
+// ---- 全局快捷键（Ctrl+K 搜索 / Ctrl+N 全局 AI）----
+const { setupShortcuts, teardownShortcuts } = useGlobalShortcuts({
+  onSearch: () => stockListRef.value?.focusSearch(),
+  onGlobalAi: () => openGlobalAiModal(),
+});
 /** 注册全局快捷键：Ctrl+K 搜索 / Ctrl+N 打开全局 AI */
 async function setupGlobalShortcuts() {
   if (isMiniMode || isIwencaiMode || isTrayPopup) return; // 子窗口不注册
@@ -159,14 +131,28 @@ const showGlobalAiModal = ref(false);
 function openGlobalAiModal() { showGlobalAiModal.value = true; }
 function closeGlobalAiModal() { showGlobalAiModal.value = false; }
 
+// 问财窗口"AI 分析这批股票"注入请求（{ question, total, columns, rows }）
+const screeningRequest = ref(null);
+
 // ---- 问财选股（独立窗口 ?iwencai=1）----
 
 /** 问财窗口选中股票 → 主窗口联动选中并加载全部数据 */
 function selectIwencaiStock(stock) {
+  // 清洗代码：问财返回的代码可能带市场后缀（如 "600519.SH"），
+  // 必须剥离为纯数字，否则 Rust 端 to_tencent_code 会拼出 "sh600519.SH" 导致全部接口失败
+  const code = String(stock.code || "").replace(/\.(SH|SZ|BJ)$/i, "");
+  if (!code) return;
+  // 市场推断：5 位=港股，43/82/83/87/88/92 开头=北交所，6 开头=沪市，其余=深市
+  let market = stock.market;
+  if (!market) {
+    if (/^\d{5}$/.test(code)) market = "HK";
+    else if (/^(43|82|83|87|88|92)/.test(code)) market = "BJ";
+    else market = code.startsWith("6") ? "SH" : "SZ";
+  }
   const full = {
-    code: stock.code,
-    name: stock.name || stock.code,
-    market: stock.market,
+    code,
+    name: stock.name || code,
+    market,
     price: 0, change: 0, changePct: 0,
     open: 0, high: 0, low: 0, prevClose: 0,
     volume: 0, turnover: 0, turnoverRate: 0, pe: 0, amplitude: 0,
@@ -242,10 +228,14 @@ function openSettingsModal() { showSettingsModal.value = true; }
 function closeSettingsModal() { showSettingsModal.value = false; }
 
 const { indices, loadIndices } = useMarketIndices();
-const { moneyFlow, moneyFlowLoading, loadMoneyFlow } = useMoneyFlow(selectedStock);
+const {
+  moneyFlow, moneyFlowLoading, loadMoneyFlow,
+  moneyFlowHistory, moneyFlowHistoryLoading, loadMoneyFlowHistory,
+} = useMoneyFlow(selectedStock);
 const { intradayData, intradayLoading, loadIntradayData } = useIntradayData();
-const { checkAndNotify } = useWatchlistNotifications();
-const { configs: maAlerts, checkMaAlerts } = useMaAlerts();
+const { checkAndNotify, prevPrices } = useWatchlistNotifications();
+const { configs: maAlerts, checkMaAlerts, removeConfig } = useMaAlerts();
+const { alerts: priceAlerts, checkPriceAlerts } = usePriceAlerts();
 const { state: settings } = useSettings();
 
 // 计算当前选中股票的"加入自选"标记
@@ -277,6 +267,8 @@ function selectStock(stock) {
   loadKlineData(stock);
   loadIntradayData(stock);
   loadMoneyFlow(stock);
+  // 资金流向历史（切股时强制刷新，覆盖 2 分钟节流）
+  loadMoneyFlowHistory(stock, { force: true });
 }
 
 function changeKlinePeriod(period) {
@@ -291,10 +283,22 @@ function onIndustryModalOpen() {
   }
 }
 
-/** 从自选移除时同步删除 AI 对话记录 */
+/** 从自选移除时同步删除 AI 对话记录、均线提醒配置与通知价格快照 */
 function handleRemoveFromWatchlist(code) {
   removeFromWatchlist(code);
   deleteStockMessages(code);
+  removeConfig(code);
+  delete prevPrices.value[code];
+}
+
+/** 详情页星标切换：取消自选时静默连带清除该股均线提醒配置 */
+function handleToggleWatchlist(stock) {
+  if (isInWatchlist(stock.code)) {
+    removeConfig(stock.code);
+    toggleWatchlist(stock);
+  } else {
+    toggleWatchlist(stock);
+  }
 }
 
 /** 从搜索结果添加自选 */
@@ -322,6 +326,29 @@ function addStockFromSearch(result) {
   selectStock(stock);
 }
 
+// ---- AI 选股卡片操作（render_stock_picks）----
+
+/** 卡片「加入自选」：清洗代码（去后缀）→ 加入自选 → 刷新行情 */
+function handleAiAddWatchlist(pick) {
+  const code = String(pick?.code || "").replace(/\.(SH|SZ|BJ)$/i, "");
+  if (!code || isInWatchlist(code)) return;
+  const market = /^\d{5}$/.test(code)
+    ? "HK"
+    : (/^(43|82|83|87|88|92)/.test(code) ? "BJ" : (code.startsWith("6") ? "SH" : "SZ"));
+  addToWatchlist({
+    code,
+    market,
+    name: pick.name || code,
+    price: 0, change: 0, changePct: 0,
+  });
+  refreshAllQuotes();
+}
+
+/** 卡片「查看详情」：复用问财联动逻辑（清洗代码 + 市场推断 + 全量加载选中） */
+function handleAiViewStock(pick) {
+  selectIwencaiStock({ code: pick?.code, name: pick?.name, market: pick?.market });
+}
+
 // 手动全部刷新
 const refreshing = ref(false);
 async function handleManualRefresh() {
@@ -333,6 +360,7 @@ async function handleManualRefresh() {
     selectedStock.value ? loadIndustryData(selectedStock.value) : Promise.resolve(),
     selectedStock.value ? loadIntradayData(selectedStock.value) : Promise.resolve(),
     selectedStock.value ? loadMoneyFlow(selectedStock.value) : Promise.resolve(),
+    selectedStock.value ? loadMoneyFlowHistory(selectedStock.value, { force: true }) : Promise.resolve(),
   ]);
   refreshing.value = false;
 }
@@ -384,13 +412,14 @@ function rescheduleTimers() {
 let unlistenMiniSelect = null;
 let unlistenIwencaiSelect = null;
 let unlistenIwencaiAdd = null;
+let unlistenIwencaiAiAnalyze = null;
 
 onMounted(() => {
   if (isMiniMode || isIwencaiMode || isTrayPopup) return; // 子窗口不执行主窗口逻辑（自带独立刷新）
 
   document.addEventListener("keydown", onKeydown);
   // 全局快捷键（Ctrl+K 搜索 / Ctrl+N 全局 AI）
-  setupGlobalShortcuts();
+  setupShortcuts();
   // 迷你窗口选中股票 → 主窗口联动
   listen("mini-select-stock", (e) => {
     const stock = watchlist.value.find((s) => s.code === e.payload?.code);
@@ -419,6 +448,13 @@ onMounted(() => {
       refreshAllQuotes();
     }
   }).then((fn) => { unlistenIwencaiAdd = fn; });
+  // 问财窗口「AI 分析这批股票」→ 打开全局 AI 并注入选股结果解读
+  listen("iwencai-ai-analyze", (e) => {
+    if (e.payload?.question && e.payload?.rows?.length) {
+      screeningRequest.value = e.payload;
+      openGlobalAiModal();
+    }
+  }).then((fn) => { unlistenIwencaiAiAnalyze = fn; });
   // 拉取港元兑人民币汇率
   invoke("get_fx_rate").then((rate) => setFxRate(rate)).catch(() => {});
   // 加载用户画像
@@ -445,9 +481,12 @@ watch(
 );
 
 async function refreshAllQuotes() {
-  // 自选股 + 已配置均线提醒的股票（可能不在自选列表）批量刷新（A 股一次请求，大幅减少 HTTP 请求数）
+  // 自选股 + 已配置均线提醒/价格提醒的股票（可能不在自选列表）批量刷新（A 股一次请求，大幅减少 HTTP 请求数）
   const maCodes = Object.keys(maAlerts.value);
-  const codes = [...new Set([...watchlist.value.map((s) => s.code), ...maCodes])];
+  const priceAlertCodes = [
+    ...new Set(priceAlerts.value.filter((a) => a.enabled).map((a) => a.code)),
+  ];
+  const codes = [...new Set([...watchlist.value.map((s) => s.code), ...maCodes, ...priceAlertCodes])];
   if (codes.length > 0) {
     const quotes = await loadQuotesBatch(codes);
     if (quotes) {
@@ -456,13 +495,17 @@ async function refreshAllQuotes() {
         const quote = quoteMap.get(stock.code);
         if (quote) {
           updateWatchlistQuote(stock.code, quote);
-          checkAndNotify(quote, settings);
+          // 通知失败（权限/系统异常）静默忽略，不影响行情刷新
+          checkAndNotify(quote, settings).catch(() => {});
         }
       });
-      // 均线提醒检查（每只配置过的股票只检查一次；K 线内部 5 分钟缓存，不会高频请求）
+      // 均线提醒/价格提醒检查（每只配置过的股票只检查一次；K 线内部 5 分钟缓存，不会高频请求）
       quotes.forEach((quote) => {
         if (maCodes.includes(quote.code)) {
           checkMaAlerts(quote, settings).catch(() => {});
+        }
+        if (priceAlertCodes.includes(quote.code)) {
+          checkPriceAlerts(quote, settings).catch(() => {});
         }
       });
     }
@@ -475,19 +518,21 @@ async function refreshAllQuotes() {
       quotes.forEach((quote) => updatePositionQuote(quote.code, quote));
     }
   }
-  // 同时刷新当前选中股票的资金流向
+  // 同时刷新当前选中股票的资金流向（历史数据走内部 2 分钟节流，避免高频请求）
   if (selectedStock.value) {
     loadMoneyFlow(selectedStock.value);
+    loadMoneyFlowHistory(selectedStock.value);
   }
 }
 
 onUnmounted(() => {
   if (isMiniMode || isIwencaiMode || isTrayPopup) return;
   document.removeEventListener("keydown", onKeydown);
-  teardownGlobalShortcuts();
+  teardownShortcuts();
   if (unlistenMiniSelect) unlistenMiniSelect();
   if (unlistenIwencaiSelect) unlistenIwencaiSelect();
   if (unlistenIwencaiAdd) unlistenIwencaiAdd();
+  if (unlistenIwencaiAiAnalyze) unlistenIwencaiAiAnalyze();
   clearInterval(indicesTimer);
   clearInterval(quotesTimer);
   clearInterval(klineTimer);
@@ -549,7 +594,10 @@ onUnmounted(() => {
         :intraday-loading="intradayLoading"
         :money-flow="moneyFlow"
         :money-flow-loading="moneyFlowLoading"
+        :money-flow-history="moneyFlowHistory"
+        :money-flow-history-loading="moneyFlowHistoryLoading"
         :watchlist-markers="watchlistMarkers"
+        @toggle-watchlist="handleToggleWatchlist"
         :positions="positions"
         @toggle-watchlist="toggleWatchlist"
         @change-kline-period="changeKlinePeriod"
@@ -591,6 +639,8 @@ onUnmounted(() => {
       :indices="indices"
       :positions="positions"
       @close="closeAiModal"
+      @add-watchlist="handleAiAddWatchlist"
+      @view-stock="handleAiViewStock"
     />
 
     <!-- 全局 AI 助手弹窗 -->
@@ -598,7 +648,11 @@ onUnmounted(() => {
       :show="showGlobalAiModal"
       :indices="indices"
       :positions="positions"
+      :screening-request="screeningRequest"
       @close="closeGlobalAiModal"
+      @screening-consumed="screeningRequest = null"
+      @add-watchlist="handleAiAddWatchlist"
+      @view-stock="handleAiViewStock"
     />
 
     <!-- 筹码峰弹窗 -->

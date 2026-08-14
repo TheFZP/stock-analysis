@@ -214,6 +214,45 @@ function onRangeTrackPointerDown(e) {
 let srPriceLines = [];
 const srLevels = ref({ support: [], resistance: [] });
 
+/** 当前股票持仓成本价（未持仓时为 null） */
+const costPrice = computed(() => {
+  if (!props.code) return null;
+  const pos = positions.value.find((p) => p.code === props.code);
+  return pos && pos.buyPrice > 0 ? pos.buyPrice : null;
+});
+/** 持仓成本线引用 */
+let costPriceLine = null;
+
+/** 已 fitContent 的数据身份（首根K线日期+数量）：仅切换股票/周期时重置视图，
+ *  定时刷新数据时保留用户的缩放/平移 */
+let fittedDataKey = "";
+
+/** 渲染/更新持仓成本线：持仓时显示，否则移除 */
+function updateCostLine() {
+  if (!candleSeries) return;
+  const cost = costPrice.value;
+  if (cost != null) {
+    if (costPriceLine) {
+      costPriceLine.applyOptions({ price: cost });
+    } else {
+      costPriceLine = candleSeries.createPriceLine({
+        price: cost,
+        color: "#f0b429",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: "成本",
+      });
+    }
+  } else if (costPriceLine) {
+    try { candleSeries.removePriceLine(costPriceLine); } catch {}
+    costPriceLine = null;
+  }
+}
+
+// 持仓变化时刷新成本线
+watch(costPrice, () => { if (candleSeries) updateCostLine(); });
+
 /** 内部状态：是否显示支撑/阻力线（由父组件通过暴露的方法控制） */
 let _srVisible = false;
 
@@ -265,7 +304,8 @@ function renderSupportResistance() {
 
     // 创建阻力线 (红色系)
     resistance.forEach((r, i) => {
-      const opacity = 1 - i * 0.2;
+      // 线条数 ≥6 时 1-i*0.2 会变成负数（非法 rgba），下限 0.15 保证可见
+      const opacity = Math.max(0.15, 1 - i * 0.2);
       const label = r.fib ? `阻力(${(r.fib * 100).toFixed(0)}%)` : `阻力${i + 1}`;
       srPriceLines.push(
         candleSeries.createPriceLine({
@@ -281,7 +321,8 @@ function renderSupportResistance() {
 
     // 创建支撑线 (绿色系)
     support.forEach((s, i) => {
-      const opacity = 1 - i * 0.2;
+      // 线条数 ≥6 时 1-i*0.2 会变成负数（非法 rgba），下限 0.15 保证可见
+      const opacity = Math.max(0.15, 1 - i * 0.2);
       const label = s.fib ? `支撑(${(s.fib * 100).toFixed(0)}%)` : `支撑${i + 1}`;
       srPriceLines.push(
         candleSeries.createPriceLine({
@@ -560,6 +601,14 @@ function updateChartData(newData) {
   const isNewDataset = dataKey !== lastDataKey;
   lastDataKey = dataKey;
 
+  // 仅当数据身份变化（切换股票/周期）时 fitContent，
+  // 定时刷新（默认 120s）不重置用户缩放/平移
+  const firstItem = newData[0];
+  const dataKey = firstItem ? `${firstItem.date}:${newData.length}` : "";
+  if (dataKey !== fittedDataKey) {
+    fittedDataKey = dataKey;
+    chart.timeScale().fitContent();
+  }
   if (isNewDataset) {
     chart.timeScale().fitContent();
     rangeFrom.value = 0;
@@ -585,6 +634,24 @@ watch(
         ensureChart();
         updateChartData(newData);
       });
+    } else if (candleSeries) {
+      // 切换到无数据股票：清空旧图表，避免残留上一只股票的内容
+      candleSeries.setData([]);
+      if (volumeSeries) volumeSeries.setData([]);
+      [highPriceLine, lowPriceLine, costPriceLine].forEach((l) => {
+        if (l) { try { candleSeries.removePriceLine(l); } catch (e) {} }
+      });
+      highPriceLine = null;
+      lowPriceLine = null;
+      costPriceLine = null;
+      srPriceLines.forEach((line) => { try { candleSeries.removePriceLine(line); } catch (e) {} });
+      srPriceLines = [];
+      Object.keys(maSeries).forEach((k) => {
+        try { chart?.removeSeries(maSeries[k]); } catch (e) {}
+        delete maSeries[k];
+      });
+      markersPlugin?.setMarkers([]);
+      signalMarkersPlugin?.setMarkers([]);
     }
   },
   { deep: true, immediate: true }

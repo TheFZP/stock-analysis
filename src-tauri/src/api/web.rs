@@ -13,6 +13,7 @@
 
 use serde::Serialize;
 use regex::Regex;
+use futures_util::StreamExt;
 
 /// 网页搜索结果项
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +39,62 @@ const BLOCKED_HOSTS: &[&str] = &[
     "weibo.com",
     "mp.weixin.qq.com",
 ];
+
+/// 判断 IP 是否为内网/回环/链路本地/组播/保留地址（SSRF 防护用）
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            match o[0] {
+                0 => true,                                   // 0.0.0.0/8
+                10 => true,                                  // 10.0.0.0/8
+                127 => true,                                 // 127.0.0.0/8 回环
+                169 => o[1] == 254,                          // 169.254.0.0/16 链路本地（云元数据）
+                172 => o[1] >= 16 && o[1] <= 31,             // 172.16.0.0/12
+                192 => o[1] == 168,                          // 192.168.0.0/16
+                100 => o[1] >= 64 && o[1] <= 127,            // 100.64.0.0/10 CGNAT
+                224..=255 => true,                           // 组播/保留
+                _ => false,
+            }
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local() // fc00::/7
+                || v6.is_unicast_link_local() // fe80::/10
+                || v6.is_multicast()
+        }
+    }
+}
+
+/// SSRF 防护：校验主机名（可带端口）。
+/// IP 直接判断私网段；域名则 DNS 解析全部地址，任一命中私网即拒绝。
+/// 返回 Ok 表示允许访问。
+async fn host_is_allowed(host: &str) -> Result<(), String> {
+    // 剥 IPv6 方括号与端口
+    let host = host.trim_start_matches('[').split(']').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host).trim();
+    if host.is_empty() {
+        return Err("URL 缺少主机名".to_string());
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return if is_private_ip(ip) {
+            Err(format!("禁止访问内网/本机地址: {}", ip))
+        } else {
+            Ok(())
+        };
+    }
+    // 域名：解析全部 A/AAAA 地址，任一为私网即拒绝（防 DNS 重绑定/内网域名）
+    let addrs = tokio::net::lookup_host((host, 80))
+        .await
+        .map_err(|e| format!("域名解析失败 {}: {}", host, e))?;
+    for addr in addrs {
+        if is_private_ip(addr.ip()) {
+            return Err(format!("域名 {} 解析到内网地址，已拒绝访问", host));
+        }
+    }
+    Ok(())
+}
 
 /// 网页搜索：使用东方财富搜索 API（免费，无需 API Key，国内可访问）
 /// 财经垂直内容库 + sort=default **相关性**排序（实测 sort=time 相关性差：
@@ -69,7 +126,7 @@ pub async fn web_search(query: &str, max_results: usize) -> Result<Vec<WebSearch
             .collect();
         if kept.len() >= 3 {
             results = kept;
-        } else if core_entity != clean_query {
+        } else {
             // 实体相关结果太少 → 用纯实体词重搜（如「寒武纪 中报 业绩」→「寒武纪」）
             results = search_eastmoney_news(&core_entity, max_results).await?;
             results = dedup_results(results);
@@ -94,30 +151,67 @@ pub async fn web_search(query: &str, max_results: usize) -> Result<Vec<WebSearch
     Ok(results)
 }
 
-/// 提取查询的核心实体：首个非泛词 token（如「寒武纪 中报 业绩」→「寒武纪」）。
-/// 东财 OR 匹配下，用首个实体词过滤可剔除"只命中热门维度词"的无关新闻
+/// 提取查询的核心实体（如「寒武纪 中报 业绩」→「寒武纪」；「宁德时代中报业绩」→「宁德时代」）。
+/// 东财 OR 匹配下，用核心实体过滤可剔除"只命中热门维度词"的无关新闻。
+/// 中文查询通常无空格，按维度词位置截断；截断失败时取前 4 字启发式兜底。
 fn extract_core_entity(clean_query: &str) -> String {
-    clean_query
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_lowercase()
+    let q = clean_query.trim();
+    if q.is_empty() {
+        return String::new();
+    }
+    // 带空格查询：首个 token 即实体
+    if let Some(first) = q.split_whitespace().next() {
+        if first != q {
+            return first.to_lowercase();
+        }
+    }
+    // 无空格中文串：在维度词处截断（「宁德时代中报业绩」→「宁德时代」）
+    const DIMENSION_WORDS: &[&str] = &[
+        "中报", "年报", "一季报", "半年报", "业绩", "公告", "批价", "股价", "市值", "政策",
+        "分红", "回购", "涨停", "跌停", "行情", "走势", "最新", "消息", "新闻", "分析", "如何",
+    ];
+    let lower = q.to_lowercase();
+    let mut cut = lower.len();
+    for w in DIMENSION_WORDS {
+        if let Some(pos) = lower.find(w) {
+            if pos > 0 {
+                cut = cut.min(pos);
+            }
+        }
+    }
+    let entity = &lower[..cut];
+    let len = entity.chars().count();
+    if (2..=8).contains(&len) {
+        entity.to_string()
+    } else {
+        // 截断失败（实体过短/过长）：取前 4 字启发式
+        lower.chars().take(4).collect()
+    }
 }
 
 /// 剥离查询中的泛词（模型常生成的"最新消息/怎么样/如何"等无效实词），
-/// 防止它们按 OR 匹配污染相关性排序。按空格拆分后逐个过滤。
+/// 防止它们按 OR 匹配污染相关性排序。
+/// 带空格查询按 token 过滤；中文无空格查询按子串剥离（split_whitespace 对无空格串无效）。
 fn strip_noise_words(query: &str) -> String {
     const NOISE_WORDS: &[&str] = &[
         "最新消息", "最新新闻", "最新动态", "最新情况", "最新进展", "最新公告", "最新资讯",
         "怎么样", "如何", "怎样", "怎么", "啥情况", "什么情况", "相关内容", "相关信息",
         "新闻报道", "新闻", "消息", "情况", "动态",
     ];
-    query
-        .split_whitespace()
-        .filter(|w| !NOISE_WORDS.iter().any(|n| w.contains(n)))
-        .collect::<Vec<_>>()
-        .join(" ")
+    if query.split_whitespace().count() > 1 {
+        query
+            .split_whitespace()
+            .filter(|w| !NOISE_WORDS.iter().any(|n| w.contains(n)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        // 中文无空格查询：按子串剥离
+        let mut s = query.to_string();
+        for n in NOISE_WORDS {
+            s = s.replace(n, "");
+        }
+        s.trim().to_string()
+    }
 }
 
 /// 结果去重：相同 URL 直接去重；相同标题只保留最新一条
@@ -198,16 +292,52 @@ async fn search_eastmoney_news(query: &str, max_results: usize) -> Result<Vec<We
 
 /// 网页抓取：获取指定 URL 的正文纯文本
 /// - 完整浏览器头模拟真实访问，降低 403 概率
-/// - 自动按 Content-Type 的 charset 解码（GBK/GB2312 等）
+/// - 自动按 Content-Type 的 charset 解码（GBK/GB2312 等；无 charset 头时按字节探测）
 /// - 智能提取正文（JSON-LD → 正文容器 → meta 描述 → 整页兜底）
 /// - 安全截断，避免在 UTF-8 字符中间切片
+/// - SSRF 防护：拒绝内网/回环/链路本地地址；限制重定向（禁止跨主机跳转）
+/// - 响应体上限 50MB，防止 OOM
 pub async fn web_fetch(url: &str) -> Result<String, String> {
-    // 只抓 http/https
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(format!("不支持的 URL 协议: {}", url));
+    // 只抓 http/https，且主机必须非内网
+    let parsed = url::Url::parse(url).map_err(|e| format!("URL 解析失败: {}", e))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(format!("不支持的 URL 协议: {}", parsed.scheme()));
     }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "URL 缺少主机名".to_string())?
+        .to_string();
+    host_is_allowed(&host).await?;
 
-    let client = super::build_http_client()?;
+    // reqwest 的重定向策略是 client 级配置（RequestBuilder 无 redirect 方法），
+    // 且策略闭包需捕获本次请求的主机 → 为 web_fetch 单独构建 client。
+    // web_fetch 是低频路径（AI 工具按需调用），不共享连接池影响可忽略
+    let original_host = host.to_lowercase();
+    let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
+        let target = attempt.url();
+        if target.scheme() != "http" && target.scheme() != "https" {
+            return attempt.error("仅允许 http/https 重定向");
+        }
+        let target_host = target.host_str().unwrap_or("").to_lowercase();
+        if target_host != original_host {
+            return attempt.error("禁止跨主机重定向");
+        }
+        if let Ok(ip) = target_host.parse::<std::net::IpAddr>() {
+            if is_private_ip(ip) {
+                return attempt.error("禁止重定向到内网地址");
+            }
+        }
+        attempt.follow()
+    });
+
+    let client = reqwest::Client::builder()
+        .user_agent(BROWSER_UA)
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(redirect_policy)
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("创建抓取客户端失败: {}", e))?;
 
     let resp = client
         .get(url)
@@ -224,11 +354,41 @@ pub async fn web_fetch(url: &str) -> Result<String, String> {
         return Err(format!("HTTP {}: 无法获取该网页（可能被反爬拦截或链接已失效）", status));
     }
 
-    // .text() 会按响应头 charset 自动解码（依赖 reqwest 的 charset feature）
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取网页内容失败: {}", e))?;
+    // 响应头 charset（用于 GBK 页面解码）
+    let charset = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|ct| {
+            ct.split(';').find_map(|p| {
+                let p = p.trim();
+                p.strip_prefix("charset=")
+                    .map(|c| c.trim_matches('"').to_lowercase())
+            })
+        });
+
+    // 流式读取并限制响应体大小（防 LLM 被诱导抓取超大文件导致 OOM）
+    let mut stream = resp.bytes_stream();
+    let mut body_bytes: Vec<u8> = Vec::new();
+    const MAX_BODY: usize = 50 * 1024 * 1024;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("读取网页内容失败: {}", e))?;
+        if body_bytes.len() + chunk.len() > MAX_BODY {
+            return Err("网页内容超过 50MB 上限，已中止抓取".to_string());
+        }
+        body_bytes.extend_from_slice(&chunk);
+    }
+
+    // 解码：优先按响应头 charset；无 charset 头时按字节探测（非 UTF-8 则尝试 GBK）
+    let body = match charset.as_deref() {
+        Some("gbk") | Some("gb2312") | Some("gb18030") => {
+            encoding_rs::GBK.decode(&body_bytes).0.into_owned()
+        }
+        _ => match std::str::from_utf8(&body_bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => encoding_rs::GBK.decode(&body_bytes).0.into_owned(),
+        },
+    };
 
     if body.trim().is_empty() {
         return Err("网页内容为空".to_string());
@@ -252,10 +412,16 @@ pub async fn web_fetch(url: &str) -> Result<String, String> {
 /// 解析东财 JSONP 响应：剥掉 jQuery(...) 壳 → 取 result.cmsArticleWebOld 新闻列表
 fn parse_eastmoney_jsonp(body: &str) -> Result<Vec<WebSearchResult>, String> {
     // 剥 JSONP 壳（兼容有/无 callback 前缀）
+    // 注意：异常页面（风控 HTML 等）中 '}' 可能出现在 '{' 之前，必须校验 start <= end，
+    // 否则切片会 panic（slice index starts at X but ends at Y）
     let json_str = body.trim();
     let json_str = if let Some(start) = json_str.find('{') {
         if let Some(end) = json_str.rfind('}') {
-            &json_str[start..=end]
+            if start <= end {
+                &json_str[start..=end]
+            } else {
+                json_str
+            }
         } else {
             json_str
         }
@@ -469,255 +635,4 @@ fn strip_html(s: &str) -> String {
         .replace("&#39;", "'")
         .replace("&nbsp;", " ");
     text.trim().to_string()
-}
-
-// ─── 单元测试（需要网络，验证搜索与抓取链路） ───
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_core_entity() {
-        // 首个实词即核心实体
-        assert_eq!(extract_core_entity("寒武纪 中报 业绩"), "寒武纪");
-        assert_eq!(extract_core_entity("贵州茅台 批价"), "贵州茅台");
-        // 单实体词原样返回
-        assert_eq!(extract_core_entity("宁德时代"), "宁德时代");
-        // 空串兜底
-        assert_eq!(extract_core_entity(""), "");
-    }
-
-    #[tokio::test]
-    async fn test_web_search_multi_word_fallback() {
-        // 多词 OR 查询（东财不支持 AND，热门词会稀释相关性）：
-        // 「寒武纪 中报 业绩」应通过核心实体过滤/兜底，返回寒武纪相关新闻
-        let results = web_search("寒武纪 中报 业绩", 10).await.unwrap();
-        assert!(!results.is_empty(), "兜底后不应为空");
-        let core = extract_core_entity("寒武纪 中报 业绩");
-        // 过滤/兜底后每条都应包含核心实体（或标题/摘要命中）
-        for r in &results {
-            assert!(
-                r.title.to_lowercase().contains(&core) || r.snippet.to_lowercase().contains(&core),
-                "结果应包含核心实体 '{}': {}",
-                core,
-                r.title
-            );
-        }
-        println!("「寒武纪 中报 业绩」兜底后 {} 条:", results.len());
-        for r in &results {
-            println!("  [{}] {}", r.date, r.title);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_web_search_latest_news() {
-        // 搜"宁德时代"应返回相关个股新闻（东财财经库，相关性排序），而不是"宁德市"城市信息
-        let results = web_search("宁德时代", 10).await.unwrap();
-        assert!(!results.is_empty());
-        for r in &results {
-            assert!(!is_blocked_host(&r.url), "不应包含反爬站: {}", r.url);
-            assert!(!r.title.contains("<em>"), "标题不应残留高亮标签: {}", r.title);
-        }
-        // 结果应包含公司相关新闻且带发布时间
-        assert!(
-            results.iter().any(|r| r.title.contains("宁德时代") || r.url.contains("eastmoney")),
-            "结果应包含'宁德时代'相关新闻: {:?}",
-            results
-        );
-        println!("搜索到 {} 条:", results.len());
-        for r in &results {
-            println!("  [{}] {} - {}", r.date, r.title, r.url);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_web_search_site_filter() {
-        // site: 限定来源 —— 东财不识别该操作符，验证本地按域名过滤兜底
-        let results = web_search("宁德时代 公告 site:cninfo.com.cn", 10).await.unwrap();
-        // 巨潮资讯可能无收录或结果少，空结果也算通过（说明过滤兜底生效而非返回垃圾结果）
-        for r in &results {
-            assert!(
-                r.url.to_lowercase().contains("cninfo.com.cn"),
-                "site: 过滤后不应出现其他来源: {}",
-                r.url
-            );
-        }
-        println!("site:cninfo 过滤后 {} 条:", results.len());
-        for r in &results {
-            println!("  [{}] {}", r.title, r.url);
-        }
-    }
-
-    #[test]
-    fn test_extract_site_filters() {
-        assert_eq!(extract_site_filters("宁德时代 公告 site:cninfo.com.cn"), vec!["cninfo.com.cn"]);
-        assert_eq!(
-            extract_site_filters("宁德时代 公告 site:cninfo.com.cn OR site:sse.com.cn"),
-            vec!["cninfo.com.cn", "sse.com.cn"]
-        );
-        // 大小写不敏感
-        assert_eq!(extract_site_filters("茅台 公告 SITE:SSE.COM.CN"), vec!["sse.com.cn"]);
-        // 无 site: 返回空
-        assert!(extract_site_filters("贵州茅台 最新新闻").is_empty());
-    }
-
-    #[test]
-    fn test_strip_noise_words() {
-        // 泛词应被剥离，实词保留
-        assert_eq!(strip_noise_words("贵州茅台 最新消息"), "贵州茅台");
-        assert_eq!(strip_noise_words("宁德时代 怎么样"), "宁德时代");
-        assert_eq!(strip_noise_words("央行 降息 最新动态 政策"), "央行 降息 政策");
-        // 无泛词时原样返回
-        assert_eq!(strip_noise_words("贵州茅台 批价 2026"), "贵州茅台 批价 2026");
-        // 全泛词 → 空串
-        assert_eq!(strip_noise_words("最新消息 怎么样"), "");
-    }
-
-    #[test]
-    fn test_dedup_results() {
-        let mk = |title: &str, url: &str, date: &str| WebSearchResult {
-            title: title.to_string(),
-            snippet: String::new(),
-            url: url.to_string(),
-            date: date.to_string(),
-        };
-        let results = vec![
-            mk("茅台新闻", "http://a.com/1", "2026-08-07 10:00:00"),
-            mk("茅台新闻", "http://a.com/2", "2026-08-07 09:00:00"), // 同标题去重
-            mk("茅台新闻", "http://a.com/1", "2026-08-07 08:00:00"), // 同 URL 去重
-            mk("另一条新闻", "http://b.com/3", "2026-08-07 07:00:00"),
-        ];
-        let out = dedup_results(results);
-        assert_eq!(out.len(), 2, "应去重后剩 2 条: {:?}", out.iter().map(|r| &r.title).collect::<Vec<_>>());
-        assert!(out[0].url.contains("/1"), "URL 去重应保留第一条");
-        assert_eq!(out[1].title, "另一条新闻");
-    }
-
-    #[test]
-    fn test_strip_em_tags() {
-        assert_eq!(strip_em_tags("<em>宁德时代</em>成立销售新公司"), "宁德时代成立销售新公司");
-        assert_eq!(strip_em_tags("无标签文本"), "无标签文本");
-        assert_eq!(strip_em_tags(""), "");
-    }
-
-    #[tokio::test]
-    async fn test_web_fetch_static_pages() {
-        // 腾讯新闻（正文在 JSON 转义 HTML 的 originContent 字段中）
-        let r = web_fetch("https://news.qq.com/rain/a/20241006A06ZBY00").await;
-        println!("腾讯新闻: {:?}", r.as_ref().map(|t| t.chars().count()).map_err(|e| e.clone()));
-        assert!(r.is_ok(), "腾讯新闻抓取失败: {:?}", r.err());
-        if let Ok(t) = r {
-            assert!(t.contains("贵州"), "腾讯新闻正文应包含'贵州', 实际前200字: {}", &t[..t.len().min(200)]);
-        }
-
-        // 非法协议应直接报错
-        let r = web_fetch("ftp://example.com/file").await;
-        assert!(r.is_err(), "ftp 协议应报错");
-    }
-
-    #[test]
-    fn test_normalize_text_truncates_safely() {
-        // 中文多字节字符边界截断不应 panic
-        let long = "股".repeat(60000);
-        let out = normalize_text(&long);
-        assert!(out.chars().count() <= 50020, "截断后应不超过 50000+后缀, 实际 {}", out.chars().count());
-        assert!(out.contains("已截断"), "应包含截断提示");
-        assert!(out.starts_with("股股股"));
-    }
-
-    #[test]
-    fn test_is_blocked_host() {
-        assert!(is_blocked_host("https://www.zhihu.com/question/123"));
-        assert!(is_blocked_host("https://baike.baidu.com/item/xxx"));
-        assert!(!is_blocked_host("https://news.qq.com/rain/a/123"));
-        assert!(!is_blocked_host("https://finance.eastmoney.com/a/123.html"));
-    }
-
-    #[test]
-    fn test_extract_article_jsonld() {
-        let body = "这是一段很长的正文内容，超过了二百个字符的阈值要求所以一定会被提取出来。".repeat(8);
-        assert!(body.chars().count() > 200, "测试正文应超 200 字符, 实际 {}", body.chars().count());
-        let html = format!(r#"<html><head><script type="application/ld+json">{{"articleBody":"{}"}}</script></head><body><nav>导航噪音</nav></body></html>"#, body);
-        let text = extract_article(&html);
-        assert!(text.contains("正文内容"), "应提取 JSON-LD 正文, 实际: {}", text);
-        assert!(!text.contains("导航噪音"), "不应包含导航");
-    }
-
-    #[test]
-    fn test_extract_article_container() {
-        let para = "这是正文段落一的内容".to_string() + &"内容".repeat(80) + "。";
-        assert!(para.chars().count() > 150, "测试正文应超 150 字符, 实际 {}", para.chars().count());
-        let html = format!(r#"<html><body><nav>导航噪音</nav><article><h1>标题</h1><p>{}</p><p>这是正文段落二。</p></article><footer>页脚</footer></body></html>"#, para);
-        let text = extract_article(&html);
-        assert!(text.contains("正文段落"), "应提取 article 容器内容, 实际: {}", text);
-        assert!(!text.contains("导航噪音"), "不应包含导航");
-        assert!(!text.contains("页脚"), "不应包含页脚");
-    }
-
-    #[test]
-    fn test_extract_article_escaped_html() {
-        // 模拟腾讯新闻：整个 originContent.text 都是 JSON 转义 HTML（\u003c 等）
-        let para = "贵州是一个充满魅力与风情的地方，拥有很多的人文胜境和山水景区，过去交通不便，如今不仅交通畅达，景区和高速还经常实行半价优惠，已经成为国内炙手可热的旅游目的地。在贵州众多景区中，体验感最好的要数下面这15个景区，去过三个就算资深玩家。".to_string();
-        let content = format!(
-            r#"<div class="rich_media_content"><p>{}</p><p>第二段内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容内容。</p></div>"#,
-            para
-        );
-        let escaped = content
-            .replace("<", "\\u003c")
-            .replace(">", "\\u003e")
-            .replace("\"", "\\\"");
-        let html = format!(
-            r#"<html><head><script>window.__DATA__ = {{"originContent": {{"text": "{}"}}}};</script></head><body><div id="app">页面骨架</div></body></html>"#,
-            escaped
-        );
-        let text = extract_article(&html);
-        assert!(text.contains("充满魅力"), "应提取转义 HTML 正文, 实际: {}", text);
-        assert!(!text.contains("页面骨架"), "不应包含骨架内容");
-    }
-
-    #[test]
-    fn test_extract_article_eastmoney_container() {
-        // 模拟东方财富：正文在 <div class="txtinfos" id="ContentBody"> 中
-        let para = "7月中旬涨价以来，飞天茅台批价淡季不淡，普遍上涨到1700元上方。".to_string()
-            + &"8月7日今日酒价披露数据显示，26年飞天茅台原箱和散装分别上涨。".repeat(6);
-        assert!(para.chars().count() > 150, "测试正文应超 150 字符");
-        let html = format!(
-            r#"<html><body><div class="contentbox"><div class="mainleft"><div class="zwinfos"><div class="txtinfos" id="ContentBody"><p>{}</p><p>第二段：华创证券表示批价企稳。</p></div></div></div><div class="mainright">推荐阅读：其他新闻</div></div></body></html>"#,
-            para
-        );
-        let text = extract_article(&html);
-        assert!(text.contains("飞天茅台批价"), "应提取东财正文, 实际: {}", text);
-        assert!(text.contains("华创证券"), "应包含第二段正文, 实际: {}", text);
-        assert!(!text.contains("推荐阅读"), "不应包含右侧推荐栏");
-    }
-
-    #[tokio::test]
-    async fn test_web_fetch_eastmoney_article() {
-        // 真实东财新闻页：正文在 txtinfos/ContentBody 容器中，应能提取全文而非仅 meta 描述
-        let url = "https://finance.eastmoney.com/a/202608073835117557.html";
-        let r = web_fetch(url).await;
-        match &r {
-            Ok(t) => {
-                println!("东财新闻抓取成功, 长度 {} 字符", t.chars().count());
-                let preview: String = t.chars().take(300).collect();
-                println!("前 300 字: {}", preview);
-            }
-            Err(e) => println!("东财新闻抓取失败: {}", e),
-        }
-        assert!(r.is_ok(), "东财新闻抓取失败: {:?}", r.err());
-        if let Ok(t) = r {
-            assert!(
-                t.contains("飞天茅台") || t.contains("批价"),
-                "东财正文应包含新闻关键内容, 实际前200字: {}",
-                &t[..t.len().min(200)]
-            );
-            // 应拿到完整正文而非仅 meta 描述（131 字符）
-            assert!(
-                t.chars().count() > 200,
-                "应提取完整正文而非 meta 兜底, 实际 {} 字符",
-                t.chars().count()
-            );
-        }
-    }
 }

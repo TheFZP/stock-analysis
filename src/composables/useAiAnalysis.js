@@ -1,7 +1,8 @@
 import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getMergedTools, getMergedToolImpl, getToolImpl, getMergedSystemPrompt } from "../skills/index.js";
-import { buildSystemPrompt, serializeContext } from "./aiContext.js";
+import { PICKS_MARKER } from "../skills/StockPicks.js";
+import { buildSystemPrompt, serializeContext, MARKET_RULES } from "./aiContext.js";
 import { callLlmStream } from "./llmClient.js";
 import { useUserProfileSingleton } from "./useUserProfile.js";
 import { useSettings } from "./useSettings.js";
@@ -72,6 +73,8 @@ function trimMessagesToBudget(messages, maxChars = 6000) {
 function buildGlobalSystemPrompt(userProfile, currentStock = null, contextData = null, webSearchEnabled = true) {
   const skillsPrompt = (() => { try { return getMergedSystemPrompt({ excludeSkills: webSearchEnabled ? [] : ["web-search"] }); } catch { return ""; } })();
   const preloaded = contextData ? serializeContext(contextData) : "";
+  // 全局 AI 同样注入北京时间（模型需要知道"今天"才能判断新闻新旧）
+  const beijingTime = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
 
   return `你是一个专业的 A 股 + 港股投资分析助手。你可以帮助用户：
 - 查询任意 A 股 / 港股股票的实时行情、K 线数据、资金流向
@@ -79,32 +82,28 @@ function buildGlobalSystemPrompt(userProfile, currentStock = null, contextData =
 - 分析行业板块、大盘指数走势
 - 回答投资相关的各类问题
 
+当前北京时间：${beijingTime}
+
 ## 可用工具
 你拥有以下工具可以调用：
 ${skillsPrompt}
 
 ## 联网搜索${webSearchEnabled ? `
-联网搜索已开启。**回答任何问题前，先搜索再回答**，流程如下：
-1. **想关键词**：把问题拆成 2-3 组**实词**关键词（如「茅台怎么样」→「贵州茅台 批价」「贵州茅台 中报」）
-2. **搜索**：调用 \`web_search\` 获取最新新闻/公告/政策；搜不到换通用说法重试，最多 2 次
-3. **叠加软件数据**：再调用本地工具获取实时数据（个股→\`get_stock_quote\`/\`get_stock_kline\`/\`get_stock_money_flow\`，大盘→\`get_market_indices\`）
-4. **综合回答**：搜索信息 + 实时数据结合，标注来源；两者矛盾以实时数据为准
-⚠️ **关键词铁律**：搜索词只用实词（实体+维度+年份），**禁止**「最新消息/最新新闻/怎么样/如何/情况/动态」等泛词——泛词会导致搜索返回无关新闻` : `
+联网搜索已开启。遵循下方《联网搜索能力》规则：先拆实词关键词搜索、再叠加本地工具数据、最后综合回答（标注来源）；关键词只用实词，禁用泛词。搜不到就明确告知，不要编造新闻内容。` : `
 联网搜索已关闭，不要尝试调用搜索工具，直接使用本地工具与已有知识回答。`}
 
 ## 用户画像
-${userProfile ? `当前用户画像：\n${userProfile}\n\n请结合用户画像提供个性化建议。` : "用户尚未设置画像。"}
+${userProfile ? userProfile : "（未设置）"}
+
+> 画像仅作参考，回答时点到为止，不要复述画像内容。
 
 ${preloaded ? `## 系统已预加载的数据
 ${preloaded}
 
-**注意**：以上大盘指数与持仓数据已随对话预加载，用户询问大盘环境、指数走势或持仓情况时直接使用，无需重复调用工具。
+**注意**：以上大盘指数、持仓及热榜股票数据已随对话预加载。用户询问大盘环境、指数走势、持仓情况或热榜选股时，直接使用这些数据回答，无需重复调用工具。若热榜数据存在，请基于预加载的热榜行情与资金流数据综合分析哪些股票值得买入。
 ` : ""}
 
-## A 股交易制度
-- **T+1**：当日买入次日才能卖出
-- **涨跌停**：主板 ±10%，创业板/科创板 ±20%，北交所 ±30%
-- **特殊标识**：ST/*ST（风险警示）、N（新股首日）、C（上市次日至第5日）、U（科创板未盈利）
+${MARKET_RULES.A}
 
 ## 港股交易制度
 - **T+0**：当日买入可当日卖出，无涨跌停限制
@@ -113,11 +112,12 @@ ${preloaded}
 - **货币**：港元 (HKD) 计价
 
 ## 注意事项
+- **数据必须真实（最高优先级）**：所有价格、涨跌幅、资金、财务数值必须来自工具返回结果，不得编造或推测；工具失败时明确告知「数据获取失败」
 - 数据仅供参考，不构成投资建议
 - 分析股票时调用工具获取实时数据，通用知识可直接回答
 - 港股以港元计价，分析时注意货币单位
 - 用户输入 @代码（如 @600519）时，该股票行情已注入上下文，优先直接分析
-- 用中文回复，简洁专业`;
+- 用中文回复：常规问答 300 字以内；用户要求详细分析时可放宽至 600-800 字，选 2 个最相关维度深入`;
 }
 
 // ============ Composable ============
@@ -140,6 +140,10 @@ export function useAiAnalysis(globalMode = false) {
   const error = ref("");
   const apiKey = ref(safeGetItem(API_KEY_KEY) || "");
 
+  // 流代际计数：switchStock/switchGlobal 时自增，使在途流式请求的所有写入失效。
+  // 防止"流式生成中切换股票"导致旧流把内容写进新股票的对话（数据污染/越界崩溃）
+  let streamGeneration = 0;
+
   // 当前激活的工具（根据 webSearchEnabled 动态切换）
   function activeTools() {
     return buildTools(webSearchEnabled.value);
@@ -151,17 +155,20 @@ export function useAiAnalysis(globalMode = false) {
   watch(() => settings.aiReasoningEffort, (v) => { if (v) reasoningEffort.value = v; });
   watch(() => settings.aiWebSearchEnabled, (v) => { webSearchEnabled.value = v !== false; });
 
-  // 自动持久化当前股票的消息（仅自选股才保存；全局模式始终保存）
+  // 自动持久化当前股票的消息（仅自选股才保存；全局模式始终保存）。
+  // 带 _injected 标记的外部注入消息（如问财选股结果解读）不持久化，避免污染对话历史
   watch(messages, (val) => {
+    const persistable = val.filter((m) => !m._injected);
     if (globalMode && currentStockCode.value) {
-      saveStockMessages(currentStockCode.value, val);
+      saveStockMessages(currentStockCode.value, persistable);
     } else if (currentStockCode.value && isStockInWatchlist(currentStockCode.value)) {
-      saveStockMessages(currentStockCode.value, val);
+      saveStockMessages(currentStockCode.value, persistable);
     }
   }, { deep: true });
 
   /** 切换到指定股票的对话 */
   function switchStock(code) {
+    streamGeneration++; // 使在途流式请求失效（其回调/写入将被丢弃）
     currentStockCode.value = code;
     messages.value = loadStockMessages(code);
     error.value = "";
@@ -177,64 +184,83 @@ export function useAiAnalysis(globalMode = false) {
     error.value = "";
   }
 
+  // 后台画像更新串行链：并发更新会"先读后写"交错导致画像增量互相覆盖，
+  // 串行化保证每次写回都基于最新画像（后一次覆盖前一次，语义正确）
+  let profileUpdateChain = Promise.resolve();
+  // 画像更新节流：10 分钟内最多 1 次（每轮对话都调 LLM 更新画像成本高，
+  // 且大部分轮次无新信息）；极短消息（"继续/展开"等）无增量信息，跳过
+  let lastProfileUpdateAt = 0;
+
   /**
    * 后台异步更新用户画像：用非流式调用让 AI 总结本轮对话，增量更新画像
    * 失败静默处理，不影响主流程
    */
-  async function updateUserProfileBackground(userText, aiResponse) {
-    try {
-      const { profileContent, saveProfile } = useUserProfileSingleton();
-      const currentProfile = profileContent.value || "";
+  function updateUserProfileBackground(userText, aiResponse) {
+    const now = Date.now();
+    if (now - lastProfileUpdateAt < 10 * 60 * 1000) return Promise.resolve();
+    if (!userText || userText.trim().length <= 10) return Promise.resolve();
+    lastProfileUpdateAt = now;
 
-      const updatePrompt = `你是一个用户画像分析器。请根据以下对话，更新用户画像（Markdown 格式，不超过200字）
+    profileUpdateChain = profileUpdateChain
+      .then(async () => {
+        const { profileContent, saveProfile } = useUserProfileSingleton();
+        // 写回前重新读取最新画像，避免覆盖其他更新的结果
+        const currentProfile = profileContent.value || "";
 
-## 当前画像
-${currentProfile || "（尚无）"}
+        const updatePrompt = `根据对话更新用户画像。**输出必须极简**：固定三行，每行一个短语（≤20字），禁止长句、禁止解释、禁止标题、禁止列表嵌套：
+- 投资风格：
+- 关注方向：
+- 风险偏好：
+无新信息则原样输出原画像，不要改写。
 
-## 本轮对话
+当前画像：
+${currentProfile || "（空）"}
+
+对话：
 用户: ${userText}
-AI: ${aiResponse.slice(0, 800)}
+AI: ${aiResponse}`;
 
-## 要求
-1. 如果当前画像为空，请创建初始画像。
-2. 如果已有画像，根据新对话微调（不要丢失原有信息）。
-3. 聚焦：投资风格 + 关注方向 + 风险偏好。
-4. 输出纯 Markdown，没有代码块包裹，没有多余解释。
-5. 用中文。`;
+        const result = await invoke("call_llm", {
+          apiKey: apiKey.value,
+          model: "deepseek-v4-flash",
+          messages: [
+            { role: "user", content: updatePrompt },
+          ],
+          tools: [],
+          reasoningEffort: "low",
+          thinkingEnabled: false,
+        });
 
-      const result = await invoke("call_llm", {
-        apiKey: apiKey.value,
-        model: "deepseek-v4-flash",
-        messages: [
-          { role: "user", content: updatePrompt },
-        ],
-        tools: [],
-        reasoningEffort: "low",
-        thinkingEnabled: false,
+        const newContent = result?.choices?.[0]?.message?.content?.trim();
+        if (newContent && newContent !== currentProfile) {
+          await saveProfile(newContent);
+        }
+      })
+      .catch(() => {
+        // 画像更新失败不影响主流程
       });
-
-      const newContent = result?.choices?.[0]?.message?.content?.trim();
-      if (newContent && newContent !== currentProfile) {
-        await saveProfile(newContent);
-      }
-    } catch {
-      // 画像更新失败不影响主流程
-    }
+    return profileUpdateChain;
   }
 
   /**
    * 发送消息 → Agent 循环 + 流式输出 + 后台画像更新
+   * @param {boolean} skipProfileUpdate - true 时不更新用户画像（自动生成的分析指令，如热榜选股）
+   * @param {Object} opts - { injected: true } 时消息带 _injected 标记（不持久化，用于外部注入）
    */
-  async function sendMessage(text, currentStock, contextData) {
+  async function sendMessage(text, currentStock, contextData, skipProfileUpdate = false, opts = {}) {
     if (!text.trim() || loading.value) return "";
     if (!apiKey.value) {
       error.value = "请先设置 API Key";
       throw new Error("NO_API_KEY");
     }
 
-    messages.value.push({ role: "user", content: text });
+    messages.value.push({ role: "user", content: text, ...(opts.injected ? { _injected: true } : {}) });
     loading.value = true;
     error.value = "";
+
+    // 记录本次发送的代际：流式期间 switchStock/switchGlobal 会使代际失效，
+    // 后续所有写入/工具执行/错误处理都会丢弃，防止污染新股票的对话
+    const gen = streamGeneration;
 
     // 流式占位消息（最终回答会被逐字填入）
     const streamMsgIdx = messages.value.length;
@@ -260,11 +286,24 @@ AI: ${aiResponse.slice(0, 800)}
       let currentMessages = [...allMessages];
       let finalContent = "";
       let emptySearchCount = 0;  // 连续空搜索计数
+      let pendingPicks = null;   // render_stock_picks 拦截的卡片数据（附到最终回答）
 
-      // Agent 循环：每个 round 使用流式调用，工具调用完成后继续下一轮
-      // 最多 8 轮（联网搜索场景需要：搜索→抓取→分析→回答）
-      for (let round = 0; round < 8; round++) {
+      // Agent 循环：每个 round 使用流式调用，工具调用完成后继续下一轮。
+      // MAX_ROUNDS 上限防止模型陷入工具调用死循环（费用失控 + UI 永久锁死）；
+      // 达到上限时注入强制收尾提示，若模型仍坚持调工具则用已有内容收尾
+      const MAX_ROUNDS = 10;
+      for (let round = 0; ; round++) {
+        if (gen !== streamGeneration) return ""; // 已切换股票：静默放弃在途请求
+
+        if (round === MAX_ROUNDS) {
+          currentMessages.push({
+            role: "system",
+            content: "[系统提示] 已达到最大工具调用轮数(10)，请立即停止调用工具，直接基于已有信息给出最终回答。",
+          });
+        }
+
         const result = await callLlmStreamWrapped(currentMessages, (content, reasoning) => {
+          if (gen !== streamGeneration) return; // 已切股：丢弃流式增量
           // 实时更新流式消息
           const msg = messages.value[streamMsgIdx];
           if (msg) {
@@ -274,7 +313,7 @@ AI: ${aiResponse.slice(0, 800)}
         });
 
         const toolCallsArr = result.tool_calls;
-        if (toolCallsArr && toolCallsArr.length > 0) {
+        if (toolCallsArr && toolCallsArr.length > 0 && round < MAX_ROUNDS) {
           // 记录 assistant 消息（包含 thinking 内容 + tool_calls）
           // 修复：保留 reasoning_content，确保 V4 思考模式下多轮对话正常
           currentMessages.push({
@@ -284,12 +323,14 @@ AI: ${aiResponse.slice(0, 800)}
             tool_calls: toolCallsArr,
           });
 
-          // 清空占位消息准备下一轮
-          const msg = messages.value[streamMsgIdx];
-          if (msg) { msg.content = ""; delete msg._reasoning; }
+          // 清空占位消息准备下一轮（带代际与存在性双重守卫）
+          const ph = messages.value[streamMsgIdx];
+          if (ph) { ph.content = ""; delete ph._reasoning; }
 
           // 依次执行工具
           for (const tc of toolCallsArr) {
+            if (gen !== streamGeneration) return ""; // 已切股：停止执行工具
+
             const fnName = tc.function?.name || tc.function_name;
             const toolFn = getToolImpl(fnName, { excludeSkills: webSearchEnabled.value ? [] : ["web-search"] });
             if (!toolFn) {
@@ -316,6 +357,29 @@ AI: ${aiResponse.slice(0, 800)}
             }
 
             const toolResult = await toolFn(args);
+
+            // render_stock_picks：拦截卡片数据（带 PICKS_MARKER 前缀），
+            // 长 JSON 不进模型上下文，只回传确认；卡片附到最终 assistant 消息渲染
+            if (
+              fnName === "render_stock_picks" &&
+              typeof toolResult === "string" &&
+              toolResult.startsWith(PICKS_MARKER)
+            ) {
+              try {
+                const parsed = JSON.parse(toolResult.slice(PICKS_MARKER.length));
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  pendingPicks = parsed;
+                  currentMessages.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: `[已渲染 ${parsed.length} 只股票卡片，请直接在回答中引用卡片内容]`,
+                  });
+                  continue;
+                }
+              } catch {
+                /* 解析失败：降级为普通工具结果处理 */
+              }
+            }
 
             // 检测连续空搜索：搜 2 次都没结果 → 注入提示让 AI 放弃搜索
             if (fnName === "web_search" && toolResult.startsWith("[空结果]")) {
@@ -344,31 +408,49 @@ AI: ${aiResponse.slice(0, 800)}
             });
           }
 
-          // 新一轮：重新创建流式占位
-          messages.value[streamMsgIdx].content = "";
-          delete messages.value[streamMsgIdx]._reasoning;
+          // 新一轮：重新清空流式占位（带守卫）
+          const ph2 = messages.value[streamMsgIdx];
+          if (ph2) { ph2.content = ""; delete ph2._reasoning; }
         } else {
-          // 没有工具调用 → 最终回答已在流式回调中填入
+          // 没有工具调用（或已达轮数上限）→ 最终回答已在流式回调中填入
+          if (gen !== streamGeneration) return "";
           finalContent = result.content || "";
           break;
         }
       }
 
       if (!finalContent) {
-        finalContent = "⚠️ 分析超时，请重试或简化您的问题。";
-        messages.value[streamMsgIdx].content = finalContent;
+        // 模型未返回正式内容（极端情况）：若有已流式输出的思考内容则保留展示
+        const partial = messages.value[streamMsgIdx];
+        if (partial?._reasoning) {
+          finalContent = `（未生成完整回答，仅保留思考过程，请重试或简化您的问题）\n\n${partial._reasoning}`;
+          if (partial) partial.content = finalContent;
+        } else {
+          finalContent = "⚠️ 分析未返回结果，请重试或简化您的问题。";
+          if (partial) partial.content = finalContent;
+        }
       }
 
-      // 移除流式标记
-      delete messages.value[streamMsgIdx]._streaming;
-      delete messages.value[streamMsgIdx]._reasoning;
+      // 移除流式标记（带存在性守卫，防止切股后索引越界）
+      const finalMsg = messages.value[streamMsgIdx];
+      if (finalMsg) {
+        delete finalMsg._streaming;
+        delete finalMsg._reasoning;
+        // 附上 render_stock_picks 的卡片数据（AiChatMessages 渲染）
+        if (pendingPicks?.length) finalMsg.picks = pendingPicks;
+      }
 
-      // 后台异步更新用户画像（全局对话同样学习用户偏好）
-      updateUserProfileBackground(text, finalContent);
+      // 后台异步更新用户画像（全局对话同样学习用户偏好；热榜选股等自动指令跳过，避免污染画像；
+      // 流式期间已切股则跳过，避免把旧对话内容写进画像）
+      if (!skipProfileUpdate && gen === streamGeneration) {
+        updateUserProfileBackground(text, finalContent);
+      }
 
       return finalContent;
     } catch (e) {
       if (e.message === "NO_API_KEY") throw e;
+      // 已切换股票：错误不再写入新股票的对话
+      if (gen !== streamGeneration) return "";
       const errMsg = `分析出错: ${e.message || e}`;
       const msg = messages.value[streamMsgIdx];
       if (msg) {
@@ -410,14 +492,27 @@ AI: ${aiResponse.slice(0, 800)}
 
   /** 全局模式：切换到全局对话 */
   function switchGlobal() {
+    streamGeneration++; // 使在途流式请求失效
     currentStockCode.value = GLOBAL_CHAT_KEY;
     messages.value = loadStockMessages(GLOBAL_CHAT_KEY);
     error.value = "";
   }
 
   /** 全局模式：发送消息（可选 @代码 快捷股票上下文 + 指数/持仓预加载） */
-  async function sendGlobalMessage(text, stock = null, contextData = null) {
-    return sendMessage(text, stock, contextData);
+  async function sendGlobalMessage(text, stock = null, contextData = null, skipProfileUpdate = false) {
+    return sendMessage(text, stock, contextData, skipProfileUpdate);
+  }
+
+  /**
+   * 外部注入消息并立即触发分析（如问财选股结果解读）。
+   * 注入的消息带 _injected 标记：仅本次会话展示，不持久化到本地历史。
+   * 自动跳过用户画像更新（系统生成的分析指令，不反映用户偏好）。
+   * @param {string} text 注入文本（通常含选股结果表）
+   * @param {Object|null} contextData 预加载数据（指数/持仓）
+   */
+  async function injectContextMessage(text, contextData = null) {
+    if (!globalMode) throw new Error("injectContextMessage 仅支持全局模式");
+    return sendMessage(text, null, contextData, true, { injected: true });
   }
 
   /** 非流式调用（兼容旧逻辑，不再使用） */
@@ -467,6 +562,7 @@ AI: ${aiResponse.slice(0, 800)}
     webSearchEnabled,
     sendMessage,
     sendGlobalMessage,
+    injectContextMessage,
     switchGlobal,
     globalMode,
     clearHistory,

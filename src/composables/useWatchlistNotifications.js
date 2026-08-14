@@ -1,61 +1,15 @@
 import { ref } from "vue";
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from "@tauri-apps/plugin-notification";
-import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
-
-const appWindow = getCurrentWindow();
+import { getToday, isTradingHours, pruneHistory } from "../utils/marketTime.js";
+import { sendAlertNotification } from "../utils/notify.js";
 
 const STORAGE_KEY = "stock-analysis-notif-history";
 
-/** 获取今日日期字符串 YYYY-MM-DD（本地时区，避免 UTC 导致 8:00-9:30 重复通知） */
-function getToday() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-/**
- * 判断当前是否在交易时段内
- * A 股：周一至周五 9:30-11:30, 13:00-15:00
- * 港股：周一至周五 9:30-12:00, 13:00-16:00（收市竞价 16:00-16:10 不单独处理）
- * @param {string} [code] 股票代码（5 位数字 = 港股），不传按 A 股
- * @returns {boolean}
- */
-function isTradingHours(code) {
-  const now = new Date();
-  const day = now.getDay(); // 0=周日, 1=周一, ..., 6=周六
-  if (day === 0 || day === 6) return false;
-
-  const h = now.getHours();
-  const m = now.getMinutes();
-  const t = h * 60 + m; // 当天分钟数
-
-  if (/^\d{5}$/.test(code || "")) {
-    // 港股：9:30-12:00 或 13:00-16:00
-    return (t >= 570 && t <= 720) || (t >= 780 && t <= 960);
-  }
-  // A 股：9:30-11:30 或 13:00-15:00
-  return (t >= 570 && t <= 690) || (t >= 780 && t <= 900);
-}
-
-/** 从 localStorage 加载通知历史 */
+/** 从 localStorage 加载通知历史（只保留最近 7 天） */
 function loadHistory() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return {};
-    const data = JSON.parse(raw);
-    // 只保留最近 7 天的记录，清理过期数据
-    const today = new Date();
-    const cutoff = new Date(today);
-    cutoff.setDate(cutoff.getDate() - 7);
-    const cutoffStr = cutoff.toISOString().slice(0, 10);
-    const cleaned = {};
-    for (const [date, stocks] of Object.entries(data)) {
-      if (date >= cutoffStr) cleaned[date] = stocks;
-    }
-    return cleaned;
+    return pruneHistory(JSON.parse(raw));
   } catch {
     return {};
   }
@@ -97,6 +51,10 @@ export function useWatchlistNotifications() {
   // 上一轮价格记录，用于检测快速拉升/下跌
   const prevPrices = ref({});
 
+  // 上次检查的日期：跨日时清空价格快照。
+  // 否则隔夜跳空会被当作"30s 内快速变动"在次日开盘瞬间误报快速拉升/下跌
+  let lastCheckDate = getToday();
+
   // 通知历史 { "2026-07-22": { "000001": ["limit_up", "+5%"] } }
   const history = ref(loadHistory());
 
@@ -119,28 +77,18 @@ export function useWatchlistNotifications() {
     return history.value[getToday()]?.[code]?.includes(type) ?? false;
   }
 
-  /** 标记为已触发 */
+  /** 标记为已触发（写入时顺带裁剪 7 天前的记录） */
   function markTriggeredToday(code, type) {
     const t = getToday();
     const todayData = history.value[t] || {};
     const triggers = todayData[code] || [];
     if (!triggers.includes(type)) {
-      history.value = {
+      history.value = pruneHistory({
         ...history.value,
         [t]: { ...todayData, [code]: [...triggers, type] },
-      };
+      });
       saveHistory(history.value);
     }
-  }
-
-  /** 确保通知权限已授予 */
-  async function ensurePermission() {
-    let permitted = await isPermissionGranted();
-    if (!permitted) {
-      const result = await requestPermission();
-      permitted = result === "granted";
-    }
-    return permitted;
   }
 
   /**
@@ -153,6 +101,13 @@ export function useWatchlistNotifications() {
   async function checkAndNotify(quote, s) {
     if (!quote || !quote.code) return;
 
+    // 跨日重置价格快照：隔夜跳空不能算"快速拉升/下跌"
+    const today = getToday();
+    if (lastCheckDate !== today) {
+      lastCheckDate = today;
+      prevPrices.value = {};
+    }
+
     // 非交易时段不通知（港股与 A 股时段不同，按代码区分）
     if (!isTradingHours(quote.code)) return;
 
@@ -163,23 +118,27 @@ export function useWatchlistNotifications() {
     const limit = getLimitThreshold(code);
     const triggeredTypes = [];
 
-    // ── 静态阈值检测（港股无涨跌停，limit 为 0 时跳过）──
+    // ── 静态阈值检测 ──
+    // 涨跌停仅限有涨跌停限制的市场（A 股/北交所；港股 limit=0 无涨跌停）
     if (limit > 0) {
       if (settings.notifyLimitUp && changePct >= limit) {
         triggeredTypes.push("limit_up");
-      } else if (settings.notifyUp7 && changePct >= 7) {
-        triggeredTypes.push("+7%");
-      } else if (settings.notifyUp5 && changePct >= 5) {
-        triggeredTypes.push("+5%");
       }
-
       if (settings.notifyLimitDown && changePct <= -limit) {
         triggeredTypes.push("limit_down");
-      } else if (settings.notifyDown7 && changePct <= -7) {
-        triggeredTypes.push("-7%");
-      } else if (settings.notifyDown5 && changePct <= -5) {
-        triggeredTypes.push("-5%");
       }
+    }
+    // ±5%/±7% 对港股同样适用（港股虽无涨跌停，但日常波动监控仍需这些阈值；
+    // 原实现把 ±5%/±7% 也包在 limit>0 内，港股被整体跳过）
+    if (settings.notifyUp7 && changePct >= 7) {
+      triggeredTypes.push("+7%");
+    } else if (settings.notifyUp5 && changePct >= 5) {
+      triggeredTypes.push("+5%");
+    }
+    if (settings.notifyDown7 && changePct <= -7) {
+      triggeredTypes.push("-7%");
+    } else if (settings.notifyDown5 && changePct <= -5) {
+      triggeredTypes.push("-5%");
     }
 
     // ── 快速拉升 / 快速下跌检测 ──
@@ -202,22 +161,17 @@ export function useWatchlistNotifications() {
     );
     if (newTriggers.length === 0) return;
 
-    // ── 确保权限 ──
-    const permitted = await ensurePermission();
-    if (!permitted) return;
-
     // ── 发送通知（await 每条，防止 Windows Toast 排队延迟）──
-    // 任务栏闪烁黄色（UserAttentionType.Critical），直到用户聚焦窗口
-    await appWindow.requestUserAttention(UserAttentionType.Critical);
-
     for (const trigger of newTriggers) {
       const label = TRIGGER_LABELS[trigger] || trigger;
       const sign = changePct > 0 ? "+" : "";
 
-      await sendNotification({
-        title: `${label}: ${name} (${code})`,
-        body: `当前价 ${price.toFixed(2)}  涨跌幅 ${sign}${changePct.toFixed(2)}%`,
-      });
+      const sent = await sendAlertNotification(
+        `${label}: ${name} (${code})`,
+        `当前价 ${price.toFixed(2)}  涨跌幅 ${sign}${changePct.toFixed(2)}%`
+      );
+      // 权限被拒时中止后续发送（避免每条都请求权限）
+      if (!sent) return;
 
       markTriggeredToday(code, trigger);
 

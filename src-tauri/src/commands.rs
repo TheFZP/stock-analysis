@@ -1,12 +1,12 @@
 use crate::api::{
     call_llm as call_llm_api, fetch_hot_list, fetch_index_quote, fetch_industry_analysis,
     fetch_industry_name, fetch_intraday_data, fetch_kline_data, fetch_money_flow,
-    fetch_money_flow_eastmoney, fetch_search_results, fetch_stock_quote,
-    fetch_stock_quotes_batch, parse_industry_analysis,
+    fetch_money_flow_eastmoney, fetch_money_flow_history, fetch_search_results,
+    fetch_stock_quote, fetch_stock_quotes_batch, parse_industry_analysis,
 };
 use crate::types::{
-    HotListData, IndustryData, IntradayData, KlineItem, MarketIndex,
-    MoneyFlow, SearchResult, StockQuote, UpdateInfo,
+    HotListData, IndustryData, IntradayData, KlineItem, MarketIndex, MoneyFlow,
+    MoneyFlowHistoryItem, SearchResult, StockQuote, UpdateInfo,
 };
 use std::fs;
 use tauri::Manager;
@@ -214,6 +214,15 @@ pub async fn get_stock_money_flow(code: String) -> Result<MoneyFlow, String> {
     }
 }
 
+/// 获取个股资金流向历史（近 N 个交易日主力/各档净流入，单位：万元）
+#[tauri::command]
+pub async fn get_stock_money_flow_history(
+    code: String,
+    limit: Option<u32>,
+) -> Result<Vec<MoneyFlowHistoryItem>, String> {
+    fetch_money_flow_history(&code, limit.unwrap_or(30)).await
+}
+
 /// 获取热榜数据
 #[tauri::command]
 pub async fn get_hot_list() -> Result<HotListData, String> {
@@ -320,6 +329,10 @@ pub async fn get_fx_rate() -> Result<f64, String> {
 // 问财智能选股
 // ──────────────────────────────────────────
 
+/// 问财共享兜底 token（服务端公开会话凭证，源码可见；用户未配置时使用。
+/// 优先从前端传参传入用户自己的 token，避免长期依赖共享凭证）
+const IWENCAI_DEFAULT_TOKEN: &str = "0ac9879417859978476843866";
+
 /// 问财自然语言选股（get-robot-data）
 /// `v` 为 chameleon.js 生成的 Cookie 值（前端 WebView 执行后获取），有效约 30 分钟
 #[tauri::command]
@@ -333,9 +346,9 @@ pub async fn get_iwencai_robot(
     crate::api::iwencai::fetch_iwencai_robot(
         &question,
         page.unwrap_or(1),
-        perpage.unwrap_or(20),
+        perpage.unwrap_or(50),
         &v,
-        token.as_deref().unwrap_or("0ac9879417859978476843866"),
+        token.as_deref().unwrap_or(IWENCAI_DEFAULT_TOKEN),
     )
     .await
 }

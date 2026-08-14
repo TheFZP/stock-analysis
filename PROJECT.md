@@ -1,6 +1,8 @@
 # stock-analysis — A 股 + 港股桌面分析工具
 
 > **Tauri 2 + Vue 3 + Rust** · 数据源: 腾讯财经 / 东方财富 / 同花顺 · AI: DeepSeek API · 图表: Lightweight Charts™ · 构建: Vite + pnpm
+>
+> 🤖 AI 代理：开工前先读本文件；配合根目录 `AGENTS.md`（会话自动注入的短指令）。文件变动须同步本文档（§7.10）。
 
 ---
 
@@ -8,213 +10,191 @@
 
 ```
 stock-analysis/
-├── src/                        ← Vue 前端
-│   ├── main.js / App.vue
-│   ├── assets/      main.css (设计 token) + modal.css (弹窗共享样式)
-│   ├── components/  布局/列表/详情/弹窗/迷你窗口 + settings/(5 标签页) + ai/(4 子组件)
-│   ├── composables/ 22 个 — 数据加载 / 纯计算 / 状态持久化（见 §3.1）
-│   ├── skills/      AI Agent 工具系统 — 10 个 skill / 13 个工具（见 §3.2）
-│   ├── prompts/     system-prompt.md
-│   └── utils/       format.js / limit.js（涨跌停幅度按板块判断）
-├── src-tauri/                  ← Rust 后端
+├── AGENTS.md                  AI 代理必读指令（DSH 会话自动注入）
+├── PROJECT.md                 本文档（架构/约定真源）
+├── src/                       Vue 前端
+│   ├── App.vue / main.js      入口；App.vue 管窗口/定时器/跨窗口联动
+│   ├── assets/                main.css（设计 token）+ modal.css（弹窗样式）
+│   ├── components/            布局/列表/详情/弹窗/迷你窗 + settings/(5) + ai/(4)
+│   ├── composables/           27 个（§3.1）
+│   ├── skills/                12 skill / 14 工具（§3.2）
+│   ├── prompts/               system-prompt.md（AI 提示词模板，§3.4）
+│   └── utils/                 format.js / limit.js（涨跌停按板块）/ marketTime.js / notify.js / klineCache.js
+├── src-tauri/                 Rust 后端
+│   ├── .cargo/config.toml     USTC sparse 镜像（勿删）
+│   ├── capabilities/          default.json 窗口权限：main/mini/iwencai
 │   └── src/
-│       ├── main.rs / lib.rs / commands.rs（19 个命令）
-│       ├── types.rs / helpers.rs
-│       └── api/       tencent / eastmoney / hotlist / llm / web / iwencai
+│       ├── commands.rs        20 个命令（§4.1）
+│       ├── types.rs / helpers.rs（代码转换 §4.3）
+│       └── api/               tencent / eastmoney / hotlist / llm / web / iwencai
 └── public/
 ```
 
----
-
 ## 2. 数据流
 
-```
-App.vue ──调用──> composables/useXxx.js
-                      │  invoke("command")
-                      ▼
-              commands.rs ──> api/tencent.rs    (腾讯财经, GBK)
-                          ──> api/eastmoney.rs  (东方财富)
-                          ──> api/hotlist.rs    (同花顺热榜)
-                          ──> api/llm.rs        (DeepSeek SSE)
-                          ──> api/web.rs        (搜索 + 正文提取)
-                          ──> api/iwencai.rs    (问财选股)
-```
+App.vue → composables/useXxx.js → invoke → commands.rs → api/（tencent 腾讯 GBK / eastmoney 东财 / hotlist 同花顺 / llm DeepSeek SSE / web 搜索+抓取 / iwencai 问财）
 
-模式：每个 composable 返回 `{ data, loading, load(), ... }`，`App.vue` 统一调用，通过 props 下发。
-
----
+模式：每个 composable 返回 `{ data, loading, load(), ... }`，App.vue 统一调用、props 下发。
 
 ## 3. 前端模块
 
-### 3.1 Composables（22 个）
+### 3.1 Composables（27 个）
 
 **数据加载（invoke 后端）**
 
-| 文件 | 用途 | 后端命令 |
-|------|------|---------|
-| `useQuoteLoader.js` | 批量加载实时行情 | `get_stock_quote` / `get_stock_quotes_batch` |
-| `useStockSearch.js` | 股票搜索（防抖） | `search_stocks` |
-| `useKlineData.js` | K 线 + 周期切换 | `get_stock_kline` |
-| `useIntradayData.js` | 分时数据 | `get_stock_intraday` |
-| `useMoneyFlow.js` | 资金流向（竞态保护） | `get_stock_money_flow` |
-| `useIndustryData.js` | 行业分析 | `get_stock_industry` |
-| `useMarketIndices.js` | 大盘指数行情 | `get_market_indices` |
-| `useAiAnalysis.js` | AI 对话（个股/全局，Agent 循环，防重复调用死循环；全局支持 @代码 引用、热榜选股） | `call_llm` + `call_llm_stream` |
-| `usePositions.js` | 持仓管理 + 盈亏（含港币→人民币汇率换算，失败回退缓存值） | `get_fx_rate` |
-| `useUserProfile.js` | 用户画像读写 | `read_user_profile` / `save_user_profile` |
-| `useIwencaiRobot.js` | 问财自然语言选股（chameleon.js 在 WebView 生成 Cookie v） | `get_iwencai_robot` |
+| 文件 | 用途 | 命令 |
+|------|------|------|
+| `useQuoteLoader` | 批量行情 | `get_stock_quote` / `get_stock_quotes_batch` |
+| `useStockSearch` | 搜索（防抖 + 序号竞态） | `search_stocks` |
+| `useKlineData` / `useIntradayData` | K线周期切换 / 分时（序号竞态） | `get_stock_kline` / `get_stock_intraday` |
+| `useMoneyFlow` | 资金流向（选中态竞态）+ 近 30 日历史（2min 节流） | `get_stock_money_flow` / `get_stock_money_flow_history` |
+| `useIndustryData` | 行业分析（序号竞态） | `get_stock_industry` |
+| `useMarketIndices` | 大盘指数 | `get_market_indices` |
+| `useAiAnalysis` | AI 对话：Agent 循环 10 轮上限、流式切股代际守卫、@代码/热榜选股、注入预计算指标 | `call_llm` + `call_llm_stream` |
+| `usePositions` | 持仓 + 盈亏（港股汇率换算） | `get_fx_rate` |
+| `useUserProfile` | 画像读写（后台更新 10min 节流） | `read/save_user_profile` |
+| `useIwencaiRobot` | 问财选股窗口（响应式状态 + 竞态保护） | `get_iwencai_robot` |
+| `iwencaiClient` | 问财凭证/查询共享模块（chameleon.js 生成 Cookie v、403 换 v 重试、会话级查询缓存 LRU 50；窗口与 AI 工具 `stock_screener` 共用） | `get_iwencai_robot` |
 
-**纯前端计算**
+**纯计算**
 
 | 文件 | 用途 |
 |------|------|
-| `useTechIndicators.js` | MACD/KDJ/RSI/WR/EMA 等 |
-| `useChipDistribution.js` | 筹码分布（三角形分布法） |
-| `useSupportResistance.js` | 支撑/阻力位（聚类 + 斐波那契） |
-| `useT0Signals.js` | 日内 T+0 交易信号（分时 + 日K趋势，输出分时图标记与摘要） |
-| `aiContext.js` | 构建 AI 系统提示词（注入持仓/画像/K线/筹码） |
+| `useTechIndicators` | MACD/KDJ/RSI/WR/EMA 纯函数（AI 预计算注入复用） |
+| `useChipDistribution` | 筹码分布（三角形法） |
+| `useSupportResistance` | 支撑/阻力（聚类 + 斐波那契） |
+| `useT0Signals` | 日内 T+0 信号 |
+| `aiContext` | 提示词构建 + 上下文序列化（§3.4） |
 
 **状态与持久化**
 
 | 文件 | 用途 |
 |------|------|
-| `useWatchlist.js` | 自选股 CRUD（加入时记录 `addedPrice`，用于"自选以来"涨跌幅） |
-| `useSettings.js` | 全局设置单例 |
-| `useWatchlistNotifications.js` | Windows 原生通知（A 股/港股分时段判断） |
-| `useMaAlerts.js` | 个股均线提醒（每股票独立配置周期 5/10/20/30/60 + 上穿/下穿/双向，日K 5min 缓存） |
-| `aiMessageStore.js` | AI 对话按股票隔离持久化 |
-| `llmClient.js` | SSE 流式 LLM 客户端（每次调用唯一 streamId，按事件 id 过滤防并发串流） |
-| `fetcher.js` | `createDataFetcher()` 工厂函数 |
+| `useWatchlist` | 自选 CRUD（记录 addedPrice） |
+| `useSettings` | 全局设置单例 |
+| `useWatchlistNotifications` | 原生通知（跨日重置快照） |
+| `useMaAlerts` | 均线提醒（MA5-60，日K 5min 缓存 LRU 100，跨日重置基准） |
+| `usePriceAlerts` | 自定义价格/条件提醒（突破/跌破目标价 + 可选放量 N×5日均量；一次性/每日两种模式；穿越检测基于价格快照，跨日重置基准） |
+| `aiMessageStore` | AI 消息按股票隔离持久化 |
+| `llmClient` | SSE 流式客户端（streamId 过滤 + 120s 超时） |
+| `fetcher` | `createDataFetcher()` 工厂（内置序号竞态） |
 
-### 3.2 Skills（AI 工具系统，10 个 skill / 13 个工具）
+**窗口与系统**
 
-`index.js` 注册器合并所有 skill 的 `tools` / `toolImpl` / `systemPrompt`。新增 skill: 创建文件 → 加入 `SKILLS` 数组 → 自动生效。
+| 文件 | 用途 |
+|------|------|
+| `useChildWindows` | 子窗口管理（迷你/问财，打开或聚焦已存在窗口） |
+| `useGlobalShortcuts` | 全局快捷键（Ctrl+K 搜索 / Ctrl+N 全局 AI；子窗口不注册，回调经 handlers 注入） |
 
-| Skill | 提供工具 |
-|-------|---------|
-| `StockQuote.js` | `get_stock_quote` |
-| `KlineAnalysis.js` | `get_stock_kline` |
-| `MoneyFlow.js` | `get_stock_money_flow`（全档：主力/超大单/大单/中单/小单） |
-| `Industry.js` | `get_stock_industry` |
-| `MarketIndices.js` | `get_market_indices` |
-| `WebSearch.js` | `web_search` / `web_fetch`；systemPrompt 为四步先搜索流程（拆词→搜索→叠加本地数据→综合）+ 关键词铁律（禁泛词）+ 权威来源优先 |
-| `Intraday.js` | `get_stock_intraday` |
-| `MarketOverview.js` | `get_hot_list` |
-| `StockSearch.js` | `search_stocks` |
-| `UserContext.js` | `read_user_profile` / `save_user_profile` / `get_fx_rate` |
+### 3.2 Skills（12 skill / 14 工具）
 
-> 19 个命令中，`call_llm` / `call_llm_stream`（AI 自身）、`get_stock_quotes_batch` / `get_iwencai_robot` / `get_app_version` / `check_for_update`（前端专用）未开放为 AI 工具，其余 13 个已开放。
+`index.js` 合并所有 skill 的 `tools` / `toolImpl` / `systemPrompt`；新增 skill → 创建文件 → 加入 `SKILLS` 数组。
 
-### 3.3 核心子系统
+| Skill | 工具 |
+|-------|------|
+| `StockQuote` | `get_stock_quote` |
+| `KlineAnalysis` | `get_stock_kline`（含指标计算公式；上下文已有预计算值时直接引用） |
+| `MoneyFlow` | `get_stock_money_flow` |
+| `Industry` | `get_stock_industry` |
+| `MarketIndices` | `get_market_indices` |
+| `WebSearch` | `web_search` / `web_fetch`（**四步搜索流程 + 关键词铁律的唯一真源**） |
+| `Intraday` | `get_stock_intraday` |
+| `MarketOverview` | `get_hot_list` |
+| `StockSearch` | `search_stocks` |
+| `IwencaiSelect` | `stock_screener`（问财自然语言选股：条件翻译/结果压缩——**全量返回整个匹配列表 ≤100 只**，列白名单 ≤6 列 ≤12000 字符/每轮 ≤2 次防限流，复用 iwencaiClient） |
+| `StockPicks` | `render_stock_picks`（选股/推荐结果卡片：toolImpl 返回 `PICKS_MARKER` 前缀 JSON，useAiAnalysis 拦截附到 `msg.picks`，AiChatMessages 渲染卡片 + 加入自选/查看详情按钮） |
+| `UserContext` | `read/save_user_profile` / `get_fx_rate` |
 
-- **持仓**: `usePositions` + `PositionModal`，localStorage 持久化，每 30s 刷新实时价计算盈亏，AI 对话时自动注入。港股自动识别（5 位代码），按汇率换算汇总
-- **用户画像**: `useUserProfile` + `ProfileModal`，Markdown 存 `app_data_dir`，AI 每次回复后自动更新（静默失败），支持手动编辑
-- **自选通知**: `useWatchlistNotifications`，涨停/跌停/±7%/±5%/快速拉升下跌(30s≥2%)，每股票每类型每日一次（按本地日期）；涨跌停阈值按板块判断（主板 ±10%/创业板科创板 ±20%/北交所 ±30%/港股无涨跌停）
-- **均线提醒**: `useMaAlerts` + `MaAlertModal`（个股详情页按钮），每只股票独立配置监控周期（MA5/10/20/30/60）与触发方向（上穿/下穿/双向），股价穿越均线时 Windows 通知，每股票每周期每日一次、仅交易时段；日K 5 分钟内存缓存避免高频请求；配置持久化 localStorage，不随自选移除而丢失
-- **全局设置**: `useSettings` + `SettingsModal`，5 标签页（通知/刷新/图表/AI/关于），实时生效
-- **AI 双入口**: 个股 AI（AiAnalysisModal，注入行情/K线/资金/行业/筹码/持仓上下文，自动学习画像）；顶部全局 AI（GlobalAiModal，注入大盘指数+持仓，`@代码` 快捷引用个股行情并复用个股上下文，同样学习画像；历史消息按 6000 字符预算裁剪防 token 超限）
-- **AI 联网搜索策略**: 联网开关（设置 AI 页 + 弹窗顶部「联网」toggle）对**所有 AI 入口统一生效**（个股 AI、全局 AI、@代码 快捷引用）。开启时 AI **先搜索再回答**：拆关键词 → `web_search` → 叠加本地工具数据（行情/K线/资金/指数）→ 综合回答；关闭时搜索 skill 的提示词与工具一并剔除（`system-prompt.md` 的 `{{SEARCH_POLICY}}` 占位符 + `getMergedSystemPrompt({ excludeSkills })` 动态注入）
-- **全局快捷键**: `Ctrl+K` 聚焦搜索框、`Ctrl+N` 打开全局 AI（`tauri-plugin-global-shortcut`，注册失败静默降级；迷你窗口不注册）
-- **单例应用**: `tauri-plugin-single-instance` — 重复启动时聚焦已有主窗口（主窗口不存在则聚焦迷你窗口），新实例直接退出，防止多开
-- **系统托盘**: `tray-icon` 特性 — 点击主窗口关闭按钮 → 隐藏到右下角托盘（不退出，首次隐藏发通知提示）；右键托盘图标菜单「显示主窗口 / 退出」；左键单击/菜单项恢复主窗口；迷你窗口关闭仍为正常关闭
-- **迷你置顶模式**: TitleBar 按钮 → 新开无边框置顶小窗（`?mini=1`），自选股实时行情 10s 刷新，双击行 `mini-select-stock` 事件联动主窗口选中并聚焦；App.vue 与 MiniMode 各自独立定时器
-- **问财选股窗口**: 顶部「选股」按钮 → 新开独立窗口（`?iwencai=1`，960×720 可调），自然语言选股；结果行点击 → `iwencai-select-stock` 事件联动主窗口选中并聚焦后自动关闭
-- **AI 双入口**: 个股 AI（AiAnalysisModal，注入行情/K线/资金/行业/筹码/持仓上下文）；全局 AI（GlobalAiModal，注入大盘指数+持仓，`@代码` 快捷引用个股，历史消息按 6000 字符预算裁剪；「热榜选股」按钮遍历热榜股票，批量行情 + 资金流向与日K线并发，数据以 `hotStocks` 字段注入，AI 只输出推荐标的）
-- **AI 联网搜索策略**: 联网开关对所有 AI 入口统一生效。开启时先 `web_search` 再叠加本地工具数据回答；关闭时搜索 skill 的提示词与工具一并剔除（`{{SEARCH_POLICY}}` 占位符 + `getMergedSystemPrompt({ excludeSkills })`）
-- **全局快捷键**: `Ctrl+K` 聚焦搜索、`Ctrl+N` 全局 AI（注册失败静默降级；迷你窗口不注册）
-- **单例应用**: `tauri-plugin-single-instance`，重复启动聚焦已有窗口
-- **系统托盘**: 主窗口关闭按钮 → 隐藏到托盘；托盘菜单「显示主窗口 / 退出」
-- **迷你置顶模式**: 无边框置顶小窗（`?mini=1`），自选股 10s 刷新，双击行联动主窗口选中
-- **问财选股窗口**: 独立窗口（`?iwencai=1`），自然语言选股，点击结果联动主窗口并自动关闭
+> 未开放为 AI 工具的命令：`call_llm` / `call_llm_stream`、`get_stock_quotes_batch`、`get_stock_money_flow_history`、`get_app_version`、`check_for_update`。
 
----
+### 3.3 核心子系统（一行一系统）
+
+- **持仓**: 30s 刷新盈亏，AI 对话自动注入；港股（5 位代码）按汇率换算汇总
+- **画像**: md 存 `app_data_dir`；AI 后台增量更新（10min 节流 + ≤10 字消息跳过，写串行化防覆盖）
+- **自选通知**: 涨停/跌停/±7%/±5%/快速涨跌(30s≥2%)，每股票每类型每日一次；**跨日重置价格快照**防隔夜跳空误报；港股无涨跌停但 ±5%/±7% 生效
+- **均线提醒**: MA5/10/20/30/60 + 上穿/下穿/双向，每日每周期一次、仅交易时段；**跨日重置基准**防隔夜跳空误判穿越；删自选连带清配置。与价格提醒共用详情页"提醒"按钮 → `AlertsModal`（双 Tab：均线/价格，主体为 `MaAlertConfig`/`PriceAlertConfig`）
+- **价格提醒**: 任意股票（不限自选）突破/跌破目标价，可选放量条件（当日量 ≥ N×5日均量，日K 5min 缓存）；一次性（触发自动暂停）或每日（每交易日一次）模式；穿越检测基于价格快照、跨日重置防跳空误报。入口为合并的"提醒"弹窗（见上）
+- **通知基础设施**: 三套通知共用 `utils/marketTime.js`（getToday/isTradingHours/pruneHistory）+ `utils/notify.js`（权限确保/sendAlertNotification）+ `utils/klineCache.js`（日K 5min 共享缓存，LRU 100）——自选通知/均线提醒/价格提醒均复用，改动通知逻辑先看这三处
+- **资金流向可视化**: 详情页"资金流向"按钮 → `MoneyFlowModal`（复用 `MoneyFlowSection`：当日 5 档分档快照 + 近 30 日主力净流入柱状图（lightweight-charts，净流入红/净流出绿 + 紫色 MA5 均线 + 今日/5/10/20 日累计摘要）+ T+0 信号徽标）；数据源东财 push2his daykline（单位万元），前端 2min 节流防高频
+- **全局设置**: 5 标签页（通知/刷新/图表/AI/关于），实时生效
+- **AI 双入口**: 个股 AI 注入行情/K线/资金/行业/筹码/持仓 + 预计算指标；全局 AI 注入指数/持仓，`@代码` 快捷引用（发送后清除），热榜选股（`hotStocks` 注入）；两处均开放 `stock_screener`（问财选股）工具
+- **AI 选股**: 问财结果窗口「AI 分析这批股票」按钮 → `iwencai-ai-analyze` 事件 → 主窗口打开全局 AI 并 `injectContextMessage` 注入结果表（带 `_injected` 标记不持久化，跳过画像更新）；解读提示词含**超短线买入建议**（资金流/换手/量比/涨速筛选 3-10 只 + render_stock_picks 卡片，无标的不硬凑）；API Key 未配置时请求保留，配置后自动重试
+- **选股卡片**: `render_stock_picks` 工具把 AI 选股结论渲染成聊天卡片（代码/名称/现价/涨跌幅/理由 + 「＋ 自选」「查看详情」按钮；两按钮事件经 GlobalAiModal/AiAnalysisModal 透传到 App.vue：加自选/复用 selectIwencaiStock 全量加载选中）
+- **联网搜索**: 开关全局生效；完整流程只维护在 `WebSearch.js`，开启时 `buildSearchPolicy()` 注入一行指针，关闭时剔除该 skill
+- **快捷键/单例/托盘**: Ctrl+K 搜索、Ctrl+N 全局 AI；single-instance 聚焦已有窗口；关窗隐藏托盘
+- **子窗口**: 迷你 `?mini=1`（10s 刷新）、问财 `?iwencai=1`（本地分页零请求；输入框「✨ AI 优化」按意图+画像改写查询，空输入禁用；结果可一键「AI 分析这批股票」注入全局 AI 解读）
+
+### 3.4 AI 提示词体系（改提示词必读）
+
+- **模板**: `prompts/system-prompt.md`，占位符 `{{BEIJING_TIME}}` / `{{SEARCH_POLICY}}` / `{{PRELOAD_SECTION}}` / `{{SKILL_PROMPTS}}` / `{{USER_PROFILE}}` / `{{MARKET_RULES}}` / `{{STOCK_CONTEXT}}`（无 `{{TOOLS}}`，工具走 API 参数）
+- **填充**: `aiContext.js` `buildSystemPrompt`（个股）+ `useAiAnalysis.js` `buildGlobalSystemPrompt`（全局）；公共常量 `MARKET_RULES` / `buildSearchPolicy` 在 `aiContext.js`；替换后校验占位符残留
+- **独立提示词（不在三处主管道内）**: 问财窗口「AI 优化」改写查询的 prompt 内嵌在 `IwencaiWindow.vue optimizeQuery()`（`call_llm` 直调，要求输出 `{"query": ...}` JSON + 注入画像）；改动时同步本行
+- **注入**: `serializeContext` → K线 30 根 + MA 最新值 + 预计算技术指标 + 资金/行业/指数/热榜/持仓/筹码
+- **硬约束**: 数值必须来自工具返回，失败明示「数据获取失败」，禁编造
 
 ## 4. Rust 后端
 
-### 4.1 Tauri 命令（19 个）
+### 4.1 Tauri 命令（20 个）
 
 | 命令 | 数据源 | 说明 |
 |------|--------|------|
-| `get_stock_quote` | Tencent | 个股实时行情 |
-| `get_stock_quotes_batch` | Tencent | 批量实时行情（A 股 50 只/批，港股逐只回退） |
-| `get_stock_kline` | Tencent | K 线（日/周/月） |
-| `get_stock_intraday` | Tencent AppStock | 分时数据（当日分钟） |
-| `get_stock_money_flow` | Tencent → East Money 备选 | 资金流向（5 档净流入+占比） |
-| `get_stock_industry` | East Money HSF10 | 行业分析 |
-| `get_market_indices` | Tencent（并行） | 七大指数（失败兜底条目用真实名称） |
-| `search_stocks` | Tencent | 股票搜索 |
-| `get_hot_list` | 同花顺 | 实时热榜 |
-| `call_llm` | DeepSeek | AI 非流式 |
-| `call_llm_stream` | DeepSeek SSE | AI 流式 → `llm-chunk`/`llm-done`/`llm-error`（payload 带 streamId） |
-| `read_user_profile` | 本地文件 | 读取画像 md |
-| `save_user_profile` | 本地文件 | 保存画像 md |
-| `web_search` | 东方财富搜索 API | 财经新闻搜索（相关性排序 + 泛词剥离/去重，带发布时间/来源） |
-| `web_fetch` | 目标 URL | 网页抓取（JSON-LD→转义HTML→正文容器→meta 四级提取，限 50000 字符） |
-| `get_fx_rate` | Frankfurter API | 港元兑人民币汇率 |
-| `get_iwencai_robot` | 问财 get-robot-data | 自然语言选股（需 Cookie v + 浏览器 UA/Referer/Origin） |
-| `get_app_version` | 本地 | 当前应用版本（CARGO_PKG_VERSION） |
-| `check_for_update` | GitHub API | 检查最新 Release（语义化版本比较；直连失败自动回退系统代理，适配国内网络） |
+| `get_stock_quote` / `get_stock_quotes_batch` | Tencent | 实时行情 / 批量（A 股 50 只/批，港股逐只） |
+| `get_stock_kline` / `get_stock_intraday` | Tencent | K 线（日/周/月）/ 分时 |
+| `get_stock_money_flow` | Tencent → 东财备选 | 资金流向 5 档（双数据源见 §7.5） |
+| `get_stock_money_flow_history` | East Money push2his | 近 N 日资金流向历史（默认 30，单位万元，klines 按日期升序直接映射，勿反转） |
+| `get_stock_industry` | East Money HSF10 | 行业分析（港股返回空） |
+| `get_market_indices` | Tencent（并行） | 七大指数（失败兜底用真实名称） |
+| `search_stocks` / `get_hot_list` | Tencent / 同花顺 | 搜索 / 实时热榜 |
+| `call_llm` / `call_llm_stream` | DeepSeek | 非流式 / SSE 流式（边界兼容 CRLF + 尾块 flush，见 §4.2） |
+| `read/save_user_profile` | 本地文件 | 画像 md 读写 |
+| `web_search` / `web_fetch` | 东财 / 目标 URL | 新闻搜索（相关性排序）/ 正文抓取（四级降级 + SSRF 防护，见 §4.2） |
+| `get_fx_rate` | Frankfurter | 港元兑人民币 |
+| `get_iwencai_robot` | 问财 | 自然语言选股（Cookie v + 浏览器头；page 被忽略，perpage ≤100） |
+| `get_app_version` / `check_for_update` | 本地 / GitHub | 版本 / 更新检查（直连失败回退系统代理） |
 
-### 4.2 数据源特征
+### 4.2 数据源特征（quirk 唯一真源）
 
 | 文件 | 编码 | 注意 |
 |------|------|------|
-| `tencent.rs` | **GBK** → `encoding_rs::GBK.decode()` | `~` 分隔，无反爬；支持批量行情 `q=` 多代码逗号拼接（A 股） |
-| `eastmoney.rs` | UTF-8 | JSON/JSONP/HTML，有 CDN/WAF（push2 主域名被拦，用 push2delay） |
+| `tencent.rs` | **GBK** → `encoding_rs` | `~` 分隔，无反爬；批量 `q=` 逗号拼接 |
+| `eastmoney.rs` | UTF-8 | push2 主域被 WAF 拦，用 push2delay → push2his 兜底 |
 | `hotlist.rs` | UTF-8 | JSON API |
-| `llm.rs` | UTF-8 | OpenAI 兼容；V4 工具调用需回传 `reasoning_content`；SSE 按字节累积、`b"\n\n"` 切分后解码 |
-| `web.rs` | UTF-8（自动解码 GBK） | 东财搜索 API（**sort=default 相关性排序**，sort=time 会返回无关新闻）；正文提取四级降级；反爬站过滤（zhihu/baike 等 8 个）；`site:域名` 本地过滤 |
-| `iwencai.rs` | UTF-8 | 响应路径 `data.answer[0].txt[0].content.components[0].data`；meta.extra 含 row_count/token/condition |
+| `llm.rs` | UTF-8 | V4 需回传 `reasoning_content`；SSE 按事件边界（`\n\n`/`\r\n\r\n`）切分 + 流末 flush 尾块；`data:` 兼容有/无空格；LLM client 240s 读超时 |
+| `web.rs` | UTF-8（无 charset 头时探测 GBK） | sort=default 相关性排序；中文无空格查询按子串剥泛词、维度词截断提实体；四级正文提取；反爬站过滤（8 个）；**SSRF 防护**（私网/回环拒绝、禁跨主机重定向、≤50MB） |
+| `iwencai.rs` | UTF-8 | 路径 `data.answer[0].txt[0].content.components[0].data`；**同 v 连续 4-6 次 → 403（换 v 恢复）；带 condition 必 403**；风控错误带 `[RATE_LIMITED]` 标记 |
 
 ### 4.3 代码转换 (helpers.rs)
 
 ```
-A 股:  600xxx → "SH600xxx" / "sh600xxx"  (东方财富 / 腾讯)
-       900xxx → "SH900xxx" / "sh900xxx"  (沪 B)
-       其他   → "SZxxxxxx" / "szxxxxxx"
-港股:  00700  → "HK00700"  / "hk00700"    (5 位数字，is_hk_stock)
-       secid  → "116.00700"              (东方财富资金流向)
-北交所: 43/82/83/87/88/92 开头 → "BJ430047" / "bj430047" / secid "0.430047"
-       (is_bse_stock；东财将北交所归入 0 市场)
+A 股:  600xxx/900xxx(沪B) → SH / sh | 其他 → SZ / sz
+港股:  00700 → HK00700 / hk00700 / secid 116.00700（5 位数字，is_hk_stock）
+北交所: 43/82/83/87/88/92 → BJ / bj / secid 0.（东财归入 0 市场）
 ```
-
----
 
 ## 5. 设计系统
 
-- **调色板**: Rust `#5d2a1a` / Apricot Wash `#fbe1d1` / Sky Wash `#d3e3fc` / Ink `#17191c`
-- **圆角**: cards 24px / inputs 16px / images 12px / pills 9999px
-- **字体**: Signifier (serif, 标题) + Sohne (无衬线, 正文)，已本地化
-- **禁止**: 饱和蓝/绿/红作为框架色、边框 >1px、渐变背景
-- **弹窗**: modal 统一使用 `assets/modal.css` 共享样式
-- **分时图参考线**: 昨收（灰虚线）+ 涨跌停（红/绿虚线，按板块阈值基于昨收计算，港股不画）
-
----
+调色板 Rust `#5d2a1a` / Apricot `#fbe1d1` / Sky `#d3e3fc` / Ink `#17191c`；圆角 cards 24 / inputs 16 / images 12 / pills 9999px；字体 Signifier(标题) + Sohne(正文) 已本地化；**禁止**饱和蓝/绿/红框架色、边框 >1px、渐变背景；弹窗统一 `modal.css`；分时图参考线 = 昨收灰虚线 + 涨跌停红/绿虚线（按板块阈值，港股不画）。
 
 ## 6. 开发命令
 
 ```bash
-pnpm install       # 安装依赖
-pnpm dev           # Vite dev server (port 1420)
-pnpm tauri dev     # Tauri 桌面应用 (dev)
-pnpm build         # 前端构建
-pnpm tauri build   # 打包 MSI + NSIS
-cargo check        # Rust 编译检查 (src-tauri/)
+pnpm install / dev / build / tauri dev / tauri build
+cargo check        # 需 Rust ≥ 1.85（time-core 0.1.8 要求 edition2024）
 ```
 
-> 前端构建按 vendor 分包（`vite.config.js` `manualChunks` 函数）：`vendor-charts`（lightweight-charts）/ `vendor-markdown`（marked+dompurify）/ `vendor-vue`（vue+@vue/*+@tauri-apps/*），避免单入口 >500 kB 警告。注意 rolldown 的 `manualChunks` 仅支持函数形式（不支持 Rollup 对象形式），且 vue 3.5 的 `@vue/*` 子包与 pnpm `.pnpm` 目录 scoped 名（`@`→`+`）需一并匹配。
-
----
+> `src-tauri/.cargo/config.toml` 内置 USTC sparse 镜像（覆盖用户全局失效镜像，勿删）。前端按 vendor 分包（`vite.config.js` manualChunks 函数：charts/markdown/vue 三 chunk）；PowerShell `2>&1` 下构建可能误报 exit 1，以 `✓ built`/`Finished` 为准。
 
 ## 7. 关键约定
 
-1. **GBK 编码**: 腾讯 API 返回 GBK，必须 `encoding_rs` 解码
-2. **竞态保护**: 切换股票时丢弃旧请求结果 (`useMoneyFlow` / `useKlineData` / `useIntradayData`，后两者用请求序号)
-3. **HTTP 客户端全局复用**: `api/mod.rs` 用 `OnceLock` 缓存 `reqwest::Client`（`build_http_client` 15s 超时 / `build_llm_http_client` 无总超时+90s 空闲池）
-4. **V4 reasoning_content**: 思考模式下 assistant 消息须回传此字段，否则 400
-5. **资金双数据源**: 腾讯 ff_ 接口已失效（`v_pv_none_match`，2026-08-12 起）→ 东方财富 **push2delay** 实时接口优先（push2 主域名被 WAF 拦截）→ push2his 历史接口兜底；`get_stock_money_flow` 先试腾讯、NO_DATA 时降级东财
-6. **港股/北交所兼容**: `helpers.rs` 按代码长度与前缀判断市场（`is_hk_stock` / `is_bse_stock` / 沪市含 900 沪B），前端自动切换货币符号与市场标签
-7. **Markdown 渲染必须消毒**: marked 默认透传原始 HTML，所有 `marked.parse` 输出须经 `DOMPurify.sanitize` 后才能 `v-html`；外部数据（如搜索结果名称）插入 HTML 前须先转义
-8. **TLS 不降级**: reqwest client 禁止 `danger_accept_invalid_certs`（API key 经 HTTPS 传输，防中间人）
-9. **CSP 加固**: `tauri.conf.json` 已配置 CSP（`default-src 'self'` + `style-src 'unsafe-inline'`，IPC 需 `connect-src ipc: http://ipc.localhost`，dev 需 `ws://localhost:1420`）
-10. **文件变动 → 同步更新本文档**（新增/删除文件、Tauri 命令、composable/skill 等）
+1. **GBK 编码**: 腾讯 API 必须 `encoding_rs` 解码
+2. **竞态保护**: 切换股票丢弃旧响应——请求序号（Kline/Intraday/Industry/Search/fetcher/Iwencai）、选中态比对（MoneyFlow）、代际守卫（AiAnalysis `streamGeneration`）
+3. **HTTP 客户端**: `api/mod.rs` OnceLock 复用（通用 15s / 代理 20s / LLM 10s 连接 + 240s 读超时；`web_fetch` 单独构建带重定向策略）
+4. **V4 reasoning_content**: 思考模式 assistant 消息须回传，否则 400
+5. **资金双数据源**: 腾讯 ff_ 已失效 → 东财 push2delay 优先 → push2his 兜底；先试腾讯、NO_DATA 降级东财
+6. **港股/北交所兼容**: `helpers.rs` 按长度与前缀判断市场，前端自动切货币符号
+7. **Markdown 必须消毒**: `marked.parse` 输出须经 `DOMPurify.sanitize` 才能 `v-html`；外部数据先转义
+8. **TLS 不降级**: 禁止 `danger_accept_invalid_certs`（API key 走 HTTPS）
+9. **CSP**: `tauri.conf.json` 已配（`connect-src ipc: http://ipc.localhost`，dev 加 `ws://localhost:1420`）
+10. **文件变动 → 同步本文档**（新增/删除文件、命令、composable/skill 等）
+11. **AI 提示词维护**: 三处位置——`system-prompt.md`（模板）/ `aiContext.js`（填充+公共常量）/ `skills/*.js`（各段），改后同步 §3.4；保留「数据必须真实」约束
+12. **AI 必读文档**: `AGENTS.md`（自动注入短指令，保持精简 ≤64KB）+ 本文档（完整真源），细节一律下沉到本文档

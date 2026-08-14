@@ -30,6 +30,61 @@ let signalMarkersPlugin = null;
 /** 缓存的 timestamp 映射 (timeStr → unixTs)，供信号标记使用 */
 let _timeMap = new Map();
 
+/** 当前股票持仓成本价（未持仓时为 null） */
+const costPrice = computed(() => {
+  if (!props.code) return null;
+  const pos = positions.value.find((p) => p.code === props.code);
+  return pos && pos.buyPrice > 0 ? pos.buyPrice : null;
+});
+/** 持仓成本线引用 */
+let costLine = null;
+/** 最近一次价格数据缓存（供持仓变化时刷新成本线） */
+let _lastPriceData = [];
+
+/** 已 fitContent 的数据身份（交易日+点数）：仅切换股票时重置视图，
+ *  定时刷新数据时保留用户的缩放/平移 */
+let fittedDataKey = "";
+
+/**
+ * 渲染/更新持仓成本线：仅当持仓且成本价在今日价格波动范围内（正常显示内可见）时显示，否则移除
+ */
+function updateCostLine(priceData) {
+  if (!priceLineSeries) return;
+  const cost = costPrice.value;
+  let inRange = false;
+  if (cost != null && priceData.length > 0) {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const d of priceData) {
+      if (d.value < min) min = d.value;
+      if (d.value > max) max = d.value;
+    }
+    inRange = cost >= min && cost <= max;
+  }
+  if (inRange) {
+    if (costLine) {
+      costLine.applyOptions({ price: cost });
+    } else {
+      costLine = priceLineSeries.createPriceLine({
+        price: cost,
+        color: "#f0b429",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: "成本",
+      });
+    }
+  } else if (costLine) {
+    try { priceLineSeries.removePriceLine(costLine); } catch {}
+    costLine = null;
+  }
+}
+
+// 持仓变化时刷新成本线（无需重新拉取分时数据）
+watch(costPrice, () => {
+  if (priceLineSeries && _lastPriceData.length > 0) updateCostLine(_lastPriceData);
+});
+
 function initChart() {
   if (!chartContainer.value || chart) return;
 
@@ -249,6 +304,17 @@ function updateChartData(intradayData) {
   // 渲染 T+0 信号标记
   renderSignalMarkers();
 
+  // 渲染持仓成本线（仅当成本价在当前分时显示范围内可见）
+  _lastPriceData = priceData;
+  updateCostLine(priceData);
+
+  // 仅当数据身份变化（切换股票）时 fitContent，
+  // 定时刷新（默认 60s）不重置用户缩放/平移
+  const dataKey = `${date}:${items.length}`;
+  if (dataKey !== fittedDataKey) {
+    fittedDataKey = dataKey;
+    chart.timeScale().fitContent();
+  }
   chart.timeScale().fitContent();
 }
 
@@ -336,6 +402,23 @@ watch(
         ensureChart();
         updateChartData(newData);
       });
+    } else if (priceLineSeries) {
+      // 切换到无数据股票：清空旧图表，避免残留上一只股票的内容
+      priceLineSeries.setData([]);
+      if (areaSeries) areaSeries.setData([]);
+      if (avgPriceSeries) avgPriceSeries.setData([]);
+      if (vwapSeries) vwapSeries.setData([]);
+      if (volumeSeries) volumeSeries.setData([]);
+      [baseLine, limitUpLine, limitDownLine, costLine].forEach((l) => {
+        if (l) { try { priceLineSeries.removePriceLine(l); } catch (e) {} }
+      });
+      baseLine = null;
+      limitUpLine = null;
+      limitDownLine = null;
+      costLine = null;
+      signalMarkersPlugin?.setMarkers([]);
+      _timeMap = new Map();
+      _lastPriceData = [];
     }
   },
   { deep: true, immediate: true }

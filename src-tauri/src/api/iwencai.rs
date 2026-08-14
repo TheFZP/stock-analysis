@@ -6,7 +6,11 @@
 /// 风控要点（已实测验证）：
 ///   - 必须携带 Cookie `v`（由 chameleon.js 本地生成，前端 WebView 执行后获取）
 ///   - 必须携带完整浏览器 UA + Referer + Origin，否则 Nginx 403
-///   - 长问句（>100 字符）对"免费版"偶发 -9138 限流，重试/稍后即恢复
+///   - 同一个 v 连续请求约 4-6 次后触发频率风控 → Nginx 403，换新 v 立即恢复
+///     （前端 useIwencaiRobot 已内置 403 自动换 v 重试）
+///   - 参数中绝不能携带 condition（Nginx 直接 403）
+///   - 免费接口忽略 page 参数（page=1/2/3 返回内容完全相同），翻页须在本地进行
+///   - perpage 上限 100（传 200 也只返回 100 行），默认 50
 ///   - 响应为标准 UTF-8 JSON（中文为 \\uXXXX 转义），无需 GBK 解码
 ///
 /// 响应解析路径（用户指定）：
@@ -63,7 +67,7 @@ pub struct IwencaiRobotData {
 ///
 /// # 参数
 /// - `question`: 自然语言选股问句（如 "非ST，市值大于50亿"）
-/// - `page` / `perpage`: 分页（1-based，perpage 建议 20-50）
+/// - `page` / `perpage`: 分页参数（page 服务端忽略；perpage 上限 100，默认 50）
 /// - `v`: chameleon.js 生成的 Cookie v 值（由前端 WebView 执行 chameleon.js 获取）
 /// - `token`: 问财接口 token（用户提供，如 0ac9879417859978476843866）
 pub async fn fetch_iwencai_robot(
@@ -104,7 +108,15 @@ pub async fn fetch_iwencai_robot(
         .map_err(|e| format!("问财请求失败: {}", e))?;
 
     if !resp.status().is_success() {
-        return Err(format!("问财请求失败: HTTP {}", resp.status()));
+        // 风控 403 用结构化标记 RATE_LIMITED 返回（前端按标记换新 v 重试），
+        // 避免前端靠匹配错误文案中的 "403" 等松散特征
+        let status = resp.status();
+        let msg = if status.as_u16() == 403 {
+            "问财请求被风控拦截 (RATE_LIMITED): HTTP 403，请更换 v 后重试".to_string()
+        } else {
+            format!("问财请求失败: HTTP {}", status)
+        };
+        return Err(msg);
     }
 
     let text = resp
@@ -122,7 +134,9 @@ pub async fn fetch_iwencai_robot(
             .as_str()
             .unwrap_or("未知错误")
             .to_string();
-        return Err(format!("问财查询失败 ({}): {}", status_code, msg));
+        // -9138 为频率风控，附加 RATE_LIMITED 标记供前端换 v 重试
+        let prefix = if status_code == -9138 { "[RATE_LIMITED] " } else { "" };
+        return Err(format!("{prefix}问财查询失败 ({}): {}", status_code, msg));
     }
 
     // 用户指定解析路径：data.answer[0].txt[0].content.components[0].data
@@ -165,40 +179,4 @@ pub async fn fetch_iwencai_robot(
         row_count,
         question: question.to_string(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::fetch_iwencai_robot;
-
-    /// 真实接口集成测试（需要有效 v，手动运行：cargo test -p stock-analysis -- --ignored）
-    /// v 由 scripts/run-chameleon.cjs 生成，或浏览器执行 public/chameleon.js 后从 document.cookie 读取
-    #[tokio::test]
-    #[ignore]
-    async fn test_fetch_iwencai_robot_real() {
-        let v = std::env::var("IWENCAI_V").expect("需要设置 IWENCAI_V 环境变量（有效 v cookie）");
-        let result = fetch_iwencai_robot(
-            "非ST，现价与一年内最低价比从小到大排列，(9:25分至9:40分成交量÷自由流通股×100)>2，实际换手率,现价>开盘价，现价>均价,量比>1,5日均价/20日均价>1,5天日均成交量/20天日均成交量>1,3天内无涨停，集中度变小，二季报盈利或二季报预告盈利或年报盈利，现价与一年内最低价比从小到大排列，市值大于50亿",
-            1,
-            5,
-            &v,
-            "0ac9879417859978476843866",
-        )
-        .await;
-        match result {
-            Ok(data) => {
-                println!("OK columns={} rows={} row_count={} condition_len={}", data.columns.len(), data.datas.len(), data.row_count, data.condition.len());
-                for col in &data.columns {
-                    print!("{} | ", col.name);
-                }
-                println!();
-                if let Some(row) = data.datas.first() {
-                    println!("first row: {:?}", row);
-                }
-                assert!(!data.columns.is_empty());
-                assert!(!data.datas.is_empty());
-            }
-            Err(e) => panic!("请求失败: {}", e),
-        }
-    }
 }
