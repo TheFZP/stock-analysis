@@ -47,7 +47,10 @@ const isMiniMode = new URLSearchParams(window.location.search).has("mini");
 const isIwencaiMode = new URLSearchParams(window.location.search).has("iwencai");
 // 托盘悬停持仓弹窗
 const isTrayPopup = new URLSearchParams(window.location.search).has("tray");
-const appWindow = getCurrentWindow();
+/** 延迟获取当前窗口，避免模块/setup 过早访问未注入的 Tauri metadata */
+function appWindow() {
+  return getCurrentWindow();
+}
 
 // ---- 子窗口管理（迷你/问财，复用已存在窗口）----
 const { openMiniWindow, openIwencaiWindow } = useChildWindows();
@@ -60,29 +63,6 @@ const { setupShortcuts, teardownShortcuts } = useGlobalShortcuts({
   onSearch: () => stockListRef.value?.focusSearch(),
   onGlobalAi: () => openGlobalAiModal(),
 });
-/** 注册全局快捷键：Ctrl+K 搜索 / Ctrl+N 打开全局 AI */
-async function setupGlobalShortcuts() {
-  if (isMiniMode || isIwencaiMode || isTrayPopup) return; // 子窗口不注册
-  try {
-    await register("CommandOrControl+K", () => {
-      stockListRef.value?.focusSearch();
-    });
-    await register("CommandOrControl+N", () => {
-      openGlobalAiModal();
-    });
-  } catch {
-    /* 快捷键被占用或平台不支持时静默降级 */
-  }
-}
-
-async function teardownGlobalShortcuts() {
-  try {
-    await unregister("CommandOrControl+K");
-    await unregister("CommandOrControl+N");
-  } catch {
-    /* ignore */
-  }
-}
 
 // ---- Composable state & actions ----
 const {
@@ -453,14 +433,14 @@ onMounted(() => {
     const stock = watchlist.value.find((s) => s.code === e.payload?.code);
     if (stock) {
       selectStock(stock);
-      appWindow.setFocus();
+      appWindow().setFocus();
     }
   }).then((fn) => { unlistenMiniSelect = fn; });
   // 问财选股窗口选中股票 → 主窗口联动
   listen("iwencai-select-stock", (e) => {
     if (e.payload?.code) {
       selectIwencaiStock(e.payload);
-      appWindow.setFocus();
+      appWindow().setFocus();
     }
   }).then((fn) => { unlistenIwencaiSelect = fn; });
   // 问财窗口「加入自选」→ 主窗口自选列表追加并刷新行情
@@ -627,7 +607,6 @@ onUnmounted(() => {
         :watchlist-markers="watchlistMarkers"
         @toggle-watchlist="handleToggleWatchlist"
         :positions="positions"
-        @toggle-watchlist="toggleWatchlist"
         @change-kline-period="changeKlinePeriod"
         @open-industry-modal="onIndustryModalOpen"
         @open-tech-modal="openTechModal"

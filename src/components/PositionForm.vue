@@ -2,20 +2,23 @@
 /**
  * PositionForm.vue — 持仓添加/编辑表单
  * 股票搜索（useStockSearch）+ 成本/数量/买入日期 + 校验，独立于持仓弹窗。
- * 通过 v-if 挂载时以 initial 初始化，提交后 emit("submit")，父组件决定新增还是编辑。
+ * 通过 v-if 挂载时以 initial 初始化；isEdit 区分新增/编辑按钮文案与父组件提交类型。
+ * 提交后 emit("submit")，父组件决定新增还是编辑。
  */
 import { ref, computed } from "vue";
 import { useStockSearch } from "../composables/useStockSearch.js";
 
 const props = defineProps({
-  /** null = 新增；对象 = 编辑（{ code, name, buyPrice, quantity, buyDate }） */
+  /** null = 空白新增；对象 = 预填字段（新增预填或编辑） */
   initial: { type: Object, default: null },
+  /** 明确区分新增/编辑；预填新增时 initial 非空但 isEdit=false */
+  isEdit: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(["submit", "cancel"]);
 
 /** 是否编辑模式 */
-const editing = computed(() => !!props.initial);
+const editing = computed(() => props.isEdit);
 
 const form = ref({
   code: props.initial?.code || "",

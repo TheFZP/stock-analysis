@@ -3,8 +3,10 @@ import { ref, computed, onMounted, onUpdated, onUnmounted, watch, nextTick } fro
 import { createChart, ColorType, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers } from "lightweight-charts";
 import { calcSupportResistance } from "../composables/useSupportResistance.js";
 import { useSettings } from "../composables/useSettings.js";
+import { usePositions } from "../composables/usePositions.js";
 
 const { state: settings } = useSettings();
+const { positions } = usePositions();
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
@@ -13,6 +15,7 @@ const props = defineProps({
   markers: { type: Array, default: () => [] },
   showSR: { type: Boolean, default: false },
   signalMarkers: { type: Array, default: () => [] },
+  code: { type: String, default: "" },
 });
 
 const emit = defineEmits(["change-period"]);
@@ -632,12 +635,6 @@ function updateChartData(newData) {
 
   // 仅当数据身份变化（切换股票/周期）时 fitContent，
   // 定时刷新（默认 120s）不重置用户缩放/平移
-  const firstItem = newData[0];
-  const dataKey = firstItem ? `${firstItem.date}:${newData.length}` : "";
-  if (dataKey !== fittedDataKey) {
-    fittedDataKey = dataKey;
-    chart.timeScale().fitContent();
-  }
   if (isNewDataset) {
     chart.timeScale().fitContent();
     rangeFrom.value = 0;

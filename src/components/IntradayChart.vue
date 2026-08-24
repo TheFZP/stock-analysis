@@ -1,7 +1,8 @@
 <script setup>
-import { ref, watch, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { createChart, ColorType, LineSeries, HistogramSeries, AreaSeries, createSeriesMarkers } from "lightweight-charts";
 import { getLimitPct } from "../utils/limit";
+import { usePositions } from "../composables/usePositions.js";
 
 const props = defineProps({
   data: { type: Object, default: null },
@@ -9,6 +10,8 @@ const props = defineProps({
   signalMarkers: { type: Array, default: () => [] },
   code: { type: String, default: "" }, // 股票代码，用于按板块计算涨跌停参考线
 });
+
+const { positions } = usePositions();
 
 const chartContainer = ref(null);
 

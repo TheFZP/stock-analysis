@@ -19,33 +19,33 @@ const emit = defineEmits(["close", "add", "edit", "remove"]);
 const { positionStats, totalProfit, totalCost, totalMarketValue, totalProfitPct, hasHK, fxRate } = usePositions();
 const { state: settings } = useSettings();
 
-/** 表单开关：挂载时以 formInitial 初始化（null = 新增，对象 = 编辑） */
+/** 表单开关：挂载时以 formInitial 初始化；formIsEdit 区分新增/编辑（预填新增也会带 initial） */
 const formOpen = ref(false);
 const formInitial = ref(null);
+const formIsEdit = ref(false);
 
 function closeModal() {
   formOpen.value = false;
   emit("close");
 }
 
-function openAddForm() {
-  formInitial.value = null;
-  formOpen.value = true;
+/** @param {object|null} stock 可选预填（详情页「加入持仓」） */
 function openAddForm(stock = null) {
-  editingCode.value = null;
-  form.value = {
-    code: stock?.code || "",
-    name: stock?.name || "",
-    buyPrice: stock?.price != null ? String(stock.price) : "",
-    quantity: "",
-    buyDate: "",
-  };
-  formError.value = "";
-  clearStockSearch();
-  showForm.value = true;
+  formIsEdit.value = false;
+  formInitial.value = stock?.code
+    ? {
+        code: stock.code || "",
+        name: stock.name || "",
+        buyPrice: stock.price,
+        quantity: "",
+        buyDate: "",
+      }
+    : null;
+  formOpen.value = true;
 }
 
 function openEditForm(pos) {
+  formIsEdit.value = true;
   formInitial.value = {
     code: pos.code || "",
     name: pos.name || "",
@@ -54,9 +54,6 @@ function openEditForm(pos) {
     buyDate: pos.buyDate || "",
   };
   formOpen.value = true;
-  formError.value = "";
-  clearStockSearch();
-  showForm.value = true;
 }
 
 /** 弹窗打开且带预填股票时：已持仓则编辑，否则新增并预填代码/名称/现价 */
@@ -73,15 +70,8 @@ watch(
   }
 );
 
-function cancelForm() {
-  editingCode.value = null;
-  showForm.value = false;
-  formError.value = "";
-  clearStockSearch();
-}
-
 function handleFormSubmit(payload) {
-  const isEdit = !!formInitial.value;
+  const isEdit = formIsEdit.value;
   formOpen.value = false;
   if (isEdit) {
     emit("edit", payload);
@@ -204,12 +194,13 @@ function handleCancelRemove() {
           <PositionForm
             v-if="formOpen"
             :initial="formInitial"
+            :is-edit="formIsEdit"
             @submit="handleFormSubmit"
             @cancel="formOpen = false"
           />
 
           <!-- 添加按钮 -->
-          <button v-if="!formOpen" class="btn-add-position" @click="openAddForm">
+          <button v-if="!formOpen" class="btn-add-position" @click="openAddForm()">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
             </svg>

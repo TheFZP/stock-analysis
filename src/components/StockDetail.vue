@@ -257,6 +257,8 @@ const sinceAddedPct = computed(() => {
           :period="klinePeriod"
           :markers="watchlistMarkers"
           :show-sr="showSR"
+          :signal-markers="signalMarkers"
+          :code="selectedStock?.code ?? ''"
           @change-period="emit('change-kline-period', $event)"
         />
       </div>

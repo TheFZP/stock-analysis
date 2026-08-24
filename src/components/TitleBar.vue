@@ -1,10 +1,9 @@
 <script setup>
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-const appWindow = getCurrentWindow();
-function windowMinimize() { appWindow.minimize(); }
-function windowToggleMax() { appWindow.toggleMaximize(); }
-function windowClose() { appWindow.close(); }
+function windowMinimize() { getCurrentWindow().minimize(); }
+function windowToggleMax() { getCurrentWindow().toggleMaximize(); }
+function windowClose() { getCurrentWindow().close(); }
 
 const emit = defineEmits(["open-mini"]);
 </script>

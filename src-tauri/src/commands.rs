@@ -104,20 +104,6 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
             fetch_latest_release(crate::api::build_proxy_http_client()?).await?
         }
     };
-    let client = crate::api::build_http_client()?;
-    let resp = client
-        .get("https://api.github.com/repos/TheFZP/stock-analysis/releases/latest")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| format!("检查更新失败: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("检查更新失败: HTTP {}", resp.status()));
-    }
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析更新数据失败: {}", e))?;
     let latest = json["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
     let url = json["html_url"].as_str().unwrap_or("").to_string();
     let current = env!("CARGO_PKG_VERSION").to_string();
