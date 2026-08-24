@@ -197,11 +197,10 @@ watch(
   }
 );
 
-// API Key 配置完成后，若有未消费的选股结果请求则自动重试
+// API Key 配置完成后，若有未消费的选股结果注入请求则自动重试
 watch(showApiKeyInput, (v) => {
-  if (!v && props.show && props.screeningRequest) {
-    analyzeScreening(props.screeningRequest);
-  }
+  if (!v || !props.show) return;
+  if (props.screeningRequest) analyzeScreening(props.screeningRequest);
 });
 
 function doSuggestion(text) {

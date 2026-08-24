@@ -18,7 +18,7 @@ import IwencaiSelect from "./IwencaiSelect.js";
 import StockPicks from "./StockPicks.js";
 
 /** 所有技能列表 */
-export const SKILLS = [
+const SKILLS = [
   StockQuote,
   KlineAnalysis,
   MoneyFlow,

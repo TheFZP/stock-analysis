@@ -82,7 +82,13 @@ watch(
   [() => props.klineData, () => props.intradayData, () => props.selectedStock],
   ([kline, intraday, stock]) => {
     if (intraday && intraday.items && intraday.items.length > 0) {
-      computeT0Signals(kline, intraday, stock);
+      // 信号分析为尽力而为的辅助功能：内部异常不得打断组件更新队列
+      // （历史教训：一次未捕获异常会级联打崩整个渲染周期）
+      try {
+        computeT0Signals(kline, intraday, stock);
+      } catch (e) {
+        console.error("计算 T+0/量价陷阱信号失败:", e);
+      }
     }
   },
   { immediate: true, deep: false }
@@ -96,6 +102,10 @@ function handleToggleSR() {
 function switchChartMode(mode) {
   if (mode === chartMode.value) return;
   chartMode.value = mode;
+
+
+
+
   if (mode === "intraday") {
     emit("load-intraday");
   }
@@ -261,25 +271,10 @@ const sinceAddedPct = computed(() => {
         />
       </div>
 
+      <!-- 今开/最高/昨收/最低 已作为参考线叠加在分时图中（IntradayChart），此处只保留量额类指标 -->
+            
+            
       <div class="meta-grid">
-        <div class="meta-item">
-          <span class="meta-label">今开</span>
-          <span class="meta-value" :class="selectedStock.open >= selectedStock.prevClose ? 'up' : 'down'">
-            {{ selectedStock.open?.toFixed(2) ?? '--' }}
-          </span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">最高</span>
-          <span class="meta-value up">{{ selectedStock.high?.toFixed(2) ?? '--' }}</span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">昨收</span>
-          <span class="meta-value">{{ selectedStock.prevClose?.toFixed(2) ?? '--' }}</span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">最低</span>
-          <span class="meta-value down">{{ selectedStock.low?.toFixed(2) ?? '--' }}</span>
-        </div>
         <div class="meta-item">
           <span class="meta-label">成交量</span>
           <span class="meta-value">{{ selectedStock.volume != null ? (selectedStock.volume / 10000).toFixed(2) + ' 万手' : '--' }}</span>
@@ -349,6 +344,7 @@ const sinceAddedPct = computed(() => {
       @close="showAlertsModal = false"
     />
   </main>
+
 </template>
 
 <style scoped>

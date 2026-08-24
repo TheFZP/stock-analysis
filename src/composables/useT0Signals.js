@@ -1,5 +1,7 @@
 import { ref } from 'vue'
-import { getLimitPct } from '../utils/limit'
+import { getLimitPct } from '../utils/limit.js'
+import { calcTrapSignals } from './useTrapSignals.js'
+import { calcVolumeSignals } from './useVolumeSignals.js'
 
 /**
  * useT0Signals — 日内 T+0 交易信号系统（基于分时数据 + 日K趋势）
@@ -329,6 +331,37 @@ export function useT0Signals() {
       })
     }
 
+    // 5. 分时量价陷阱（诱多/诱空嫌疑）：标记并入分时图，信号并入列表
+    const trapRes = calcTrapSignals(intradayData)
+    for (const t of trapRes.traps) {
+      signalList.push({
+        // "疑似"前缀：诱多/诱空为未确认定性，需 confirm 字段的后续走势验证
+        name: `${t.type === 'bull' ? '疑似诱多' : '疑似诱空'}·${t.name}`,
+        desc: t.desc,
+        action: t.action,
+        trap: true,
+        trapType: t.type,
+        severity: t.severity,
+        confirm: t.confirm,
+        time: t.time,
+      })
+    }
+
+    // 6. 分时量价信号（天量/突破/背离/缩量 + 前瞻预警）：整线扫描，只上图标记
+    const volRes = calcVolumeSignals(intradayData)
+    // 前瞻预警（放量急拉⚠/放量急跌⚠/无量拉升⚠）并入 T+0 信号列表（当下可判，带行动建议）
+    for (const s of volRes.signals) {
+      if (s.level === "warn") {
+        signalList.push({
+          name: s.name,
+          desc: s.desc,
+          action: "实时预警（当下可判，不依赖后续走势）：追高/杀跌前先看量能验证",
+          warn: true,
+          time: s.time,
+        })
+      }
+    }
+
     // ======== 方向判断 ========
     let direction = '观望'
     const directionReason = []
@@ -378,9 +411,16 @@ export function useT0Signals() {
     if (bottomDivergence && direction === '反T为主') risks.push('底背离+下降趋势，杀跌需谨慎')
     if (intraVolRatio > 2) risks.push('分时放量明显，警惕主力对倒出货')
     if (intraVolRatio < 0.3 && N > 30) risks.push('极度缩量，流动性可能影响 T+0 执行')
-    if (N < 30) risks.push('开盘数据量不足，信号可靠性低')
+    if (N < 15) risks.push('开盘数据量不足，信号可靠性低')
     if (nearLimitPct > 0 && changePct > limitPct - 1) risks.push(`已逼近涨停板（${limitPct.toFixed(0)}%），追涨挂单可能成交后回落`)
     if (nearLimitPct > 0 && changePct < -(limitPct - 1)) risks.push(`已逼近跌停板（${limitPct.toFixed(0)}%），明日可能继续低开`)
+    // 量价陷阱风险（trapRes 在信号检测段计算，risks 声明在本段，故在此追加）
+    if (trapRes.traps.some((t) => t.type === 'bull')) {
+      risks.push('检测到诱多嫌疑（放量滞涨/冲高回落/尾盘虚拉），追高需极度谨慎')
+    }
+    if (trapRes.traps.some((t) => t.type === 'bear')) {
+      risks.push('检测到诱空嫌疑（急跌收复/低位反转），恐慌杀跌需谨慎')
+    }
     risks.push('A 股 T+1 制度，做T需依托底仓，分析仅供参考')
 
     // ======== 图表标记 ========
@@ -397,6 +437,22 @@ export function useT0Signals() {
         color: '#27ae60', shape: 'arrowUp', text: '偏离<-3%', size: 2,
       })
     }
+    // 量价陷阱标记（诱多红↓ / 诱空绿↑），与已有标记按 时间+文本 去重
+    for (const m of trapRes.markers) {
+      if (!markers.some((x) => x.time === m.time && x.text === m.text)) {
+        markers.push(m)
+      }
+    }
+    // 量价信号标记（放量/天量/缩量/突破/背离），同分钟陷阱优先（陷阱更严重，先占位）
+    for (const m of volRes.markers) {
+      const hasTrapAtTime = markers.some(
+        (x) => x.time === m.time && (x.text === '诱多?' || x.text === '诱空?')
+      )
+      if (hasTrapAtTime) continue
+      if (!markers.some((x) => x.time === m.time && x.text === m.text)) {
+        markers.push(m)
+      }
+    }
     signalMarkers.value = markers
 
     summary.value = {
@@ -412,6 +468,9 @@ export function useT0Signals() {
         trend: trendDir === 'up' ? '上升' : trendDir === 'down' ? '下降' : '横盘',
         changePct: changePct.toFixed(2),
         ma5, ma10, macdState, dataPoints: N,
+        trapCount: trapRes.traps.length,
+        volumeSignalCount: volRes.signals.length,
+        volumeSignals: volRes.signals.slice(-6).map((s) => ({ time: s.time, name: s.name, type: s.type })),
       },
     }
   }

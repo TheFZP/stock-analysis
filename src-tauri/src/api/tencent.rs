@@ -312,16 +312,34 @@ pub async fn fetch_search_results(keyword: &str) -> Result<Vec<SearchResult>, St
 }
 
 /// 获取个股 K 线数据（来自腾讯财经）
-/// period: "day" | "week" | "month"
+/// period: "day" | "week" | "month" | "m5" | "m15" | "m30" | "m60"
+///
+/// 分钟级周期（m5/m15/m30/m60）走 mkline 接口（无复权概念，数据键 = period 本身）；
+/// 日/周/月走 fqkline 接口（前复权，数据键 qfqday/qfqweek/qfqmonth）。
 pub async fn fetch_kline_data(code: &str, period: &str) -> Result<Vec<KlineItem>, String> {
     use crate::helpers::parse_json_f64;
 
     let client = super::build_http_client()?;
     let t_code = to_tencent_code(code);
-    let url = format!(
-        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={},{},,,120,qfq",
-        t_code, period
-    );
+    let is_minute = matches!(period, "m5" | "m15" | "m30" | "m60");
+
+    // 腾讯 mkline 接口不支持港股分钟 K 线（实测 param error），降级提示
+    if is_minute && crate::helpers::is_hk_stock(code) {
+        return Err("港股暂不支持分钟 K 线".to_string());
+    }
+
+    let url = if is_minute {
+        // 分钟 K：mkline 接口，单次最多约 320 根（5分≈6.7 交易日，60分≈2.5 个月）
+        format!(
+            "https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={},{},,320",
+            t_code, period
+        )
+    } else {
+        format!(
+            "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={},{},,,120,qfq",
+            t_code, period
+        )
+    };
 
     let resp = client
         .get(&url)
@@ -336,21 +354,28 @@ pub async fn fetch_kline_data(code: &str, period: &str) -> Result<Vec<KlineItem>
         .await
         .map_err(|e| format!("解析 JSON 失败: {}", e))?;
 
-    let data_key = match period {
-        "week" => "qfqweek",
-        "month" => "qfqmonth",
-        _ => "qfqday",
+    let klines = if is_minute {
+        // mkline 响应：data.{t_code}.{period} 直接是数组（另有 qt/prec 等字段）
+        data.get("data")
+            .and_then(|d| d.get(&t_code))
+            .and_then(|s| s.get(period))
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| "未找到分钟 K 线数据".to_string())?
+    } else {
+        let data_key = match period {
+            "week" => "qfqweek",
+            "month" => "qfqmonth",
+            _ => "qfqday",
+        };
+        data.get("data")
+            .and_then(|d| d.get(&t_code))
+            .and_then(|s| s.get(data_key).or_else(|| {
+                let fallback = match period { "week" => "week", "month" => "month", _ => "day" };
+                s.get(fallback)
+            }))
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| "未找到 K 线数据".to_string())?
     };
-
-    let klines = data
-        .get("data")
-        .and_then(|d| d.get(&t_code))
-        .and_then(|s| s.get(data_key).or_else(|| {
-            let fallback = match period { "week" => "week", "month" => "month", _ => "day" };
-            s.get(fallback)
-        }))
-        .and_then(|d| d.as_array())
-        .ok_or_else(|| "未找到 K 线数据".to_string())?;
 
     let items: Vec<KlineItem> = klines.iter().filter_map(|k| {
         let arr = k.as_array()?;
@@ -437,6 +462,30 @@ pub async fn fetch_intraday_data(code: &str) -> Result<IntradayData, String> {
     let mut cum_vol = 0.0; // ∑(volume per-minute) for VWAP
     let mut prev_vol = 0.0; // 上一分钟的累计量，用于差分
     let mut prev_turnover = 0.0; // 上一分钟的累计额，用于差分
+
+    // 交易时段判断（按市场）：接口会在收盘后附带零星的盘后成交分钟
+    // （如 15:06-15:30 量 0-20 的僵尸数据），必须剔除——
+    // 否则"尾盘 15 分钟"检测窗口会被盘后数据占据，尾盘信号/指标全部失效
+    let is_session_minute = |time: &str| -> bool {
+        let hhmm: Vec<&str> = time.split(':').collect();
+        if hhmm.len() != 2 {
+            return false;
+        }
+        let h: i32 = hhmm[0].parse().unwrap_or(-1);
+        let m: i32 = hhmm[1].parse().unwrap_or(-1);
+        if h < 0 || m < 0 {
+            return false;
+        }
+        let t = h * 60 + m;
+        if crate::helpers::is_hk_stock(code) {
+            // 港股：9:30-12:00 / 13:00-16:00
+            (570..=720).contains(&t) || (780..=960).contains(&t)
+        } else {
+            // A 股：9:30-11:30 / 13:00-15:00
+            (570..=690).contains(&t) || (780..=900).contains(&t)
+        }
+    };
+
     for point in points {
         let s = point.as_str().unwrap_or("");
         if s.is_empty() {
@@ -451,6 +500,15 @@ pub async fn fetch_intraday_data(code: &str) -> Result<IntradayData, String> {
             } else {
                 raw_time.to_string()
             };
+            // 剔除交易时段外的分钟（含盘后零星成交）
+            if !is_session_minute(&time) {
+                // 注意：被剔除分钟同样要推进累计量/额基准，否则差分会算错
+                if let Ok(cv) = parts[2].parse::<f64>() {
+                    prev_vol = cv;
+                    prev_turnover = parts.get(3).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                }
+                continue;
+            }
             let price: f64 = parts[1].parse().unwrap_or(0.0);
             let cum_volume: f64 = parts[2].parse().unwrap_or(0.0); // API 返回的是累计量（手）
             let cum_turnover: f64 = parts.get(3).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0); // 累计成交额（元）
